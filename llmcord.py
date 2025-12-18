@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
+import re  # Added import for Regex
 
 import discord
 from discord.app_commands import Choice
@@ -353,6 +354,21 @@ async def on_message(new_msg: discord.Message) -> None:
                             await response_msgs[-1].edit(embed=embed)
 
                         last_task_time = datetime.now().timestamp()
+
+            # --- logic to strip <think> blocks before sending plain response ---
+            # 1. Join all accumulated parts into one string (in case <think> spanned a chunk boundary)
+            full_response = "".join(response_contents)
+            
+            # 2. Use regex to remove the block
+            if "<think>" in full_response:
+                logging.info(f"\n\Found a thinking block! Stripping now!\n")
+                full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
+                
+                # 3. Re-chunk the cleaned text back into response_contents so it fits the max length
+                if full_response:
+                    response_contents = [full_response[i:i+max_message_length] for i in range(0, len(full_response), max_message_length)]
+                else:
+                    response_contents = []
 
             if use_plain_responses:
                 for content in response_contents:
