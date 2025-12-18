@@ -57,6 +57,7 @@ class MsgNode:
 
     role: Literal["user", "assistant"] = "assistant"
     user_id: Optional[int] = None
+    user_name: Optional[str] = None
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
@@ -249,21 +250,24 @@ async def on_message(new_msg: discord.Message) -> None:
                 ]
                 node.role = "assistant" if msg.author == discord_bot.user else "user"
                 node.user_id = msg.author.id if node.role == "user" else None
+                node.user_name = msg.author.display_name if node.role == "user" else None
                 node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
                 # Parent linking only needed for reply‑chain mode
                 if not use_channel_context:
                     # (same parent‑fetch logic as above, omitted for brevity)
                     pass
             formatted_text = node.text[:max_text]  # base text (already trimmed)
+            
             # Apply prefix only when:
             #   • toggle is enabled
             #   • provider does NOT support native usernames (accept_usernames == False)
             #   • the message role is "user"
-            #   • we have a valid Discord user ID
-            if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_id is not None:
-                formatted_text = f"{node.user_id}: {formatted_text}"
+            #   • we have a valid Discord user Name
+            if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_name is not None:
+                formatted_text = f"{node.user_name}(ID:{node.user_id}): {formatted_text}"
                 # keep node.text consistent for any later use
                 node.text = formatted_text
+            
             # ---- Build LLM message payload ----
             if node.images[:max_images]:
                 content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
@@ -272,7 +276,12 @@ async def on_message(new_msg: discord.Message) -> None:
             if content:
                 payload = dict(content=content, role=node.role)
                 # Preserve native name field for providers that support it
-                if accept_usernames and node.user_id:
+                if accept_usernames and node.user_id and node.user_name:
+                    # OpenAI only allows a-z, A-Z, 0-9, _, - in the 'name' field.
+                    # We try to sanitize the display name. If it results in an empty string (e.g. all emojis), we fallback to the ID.
+                    sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '', node.user_name)[:64]
+                    payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
+                elif accept_usernames and node.user_id:
                     payload["name"] = str(node.user_id)
                 messages.append(payload)
             # ---- Warnings ----
