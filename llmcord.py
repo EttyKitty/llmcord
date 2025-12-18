@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
-import re  # Added import for Regex
+import re
 
 import discord
 from discord.app_commands import Choice
@@ -122,6 +122,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     use_channel_context = config.get("use_channel_context", False)
     prefix_with_user_id = config.get("prefix_with_user_id", False)
+    force_reply_chains = config.get("force_reply_chains", False)
 
     permissions = config["permissions"]
 
@@ -175,6 +176,12 @@ async def on_message(new_msg: discord.Message) -> None:
     messages: list[dict] = []
     user_warnings: set[str] = set()
     message_history: list[discord.Message] = []
+
+    # If the user is replying to a specific message, we force reply-chain mode
+    # even if channel context is enabled.
+    if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
+        use_channel_context = False
+
     if use_channel_context:
         # ---- Full‑channel mode -------------------------------------------------
         # Discord returns newest → oldest, so we start with the current message
@@ -361,7 +368,7 @@ async def on_message(new_msg: discord.Message) -> None:
             
             # 2. Use regex to remove the block
             if "<think>" in full_response:
-                logging.info(f"\n\Found a thinking block! Stripping now!\n")
+                logging.info(f"\n\nFound a thinking block! Stripping now!\n")
                 full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
                 
                 # 3. Re-chunk the cleaned text back into response_contents so it fits the max length
