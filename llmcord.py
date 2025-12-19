@@ -339,7 +339,21 @@ async def on_message(new_msg: discord.Message) -> None:
                 finish_reason = choice.finish_reason
 
                 prev_content = curr_content or ""
-                curr_content = choice.delta.content or ""
+                
+                # --- Fix for Mistral/Multimodal returning list content ---
+                delta = choice.delta
+                if isinstance(delta.content, list):
+                    curr_content = ""
+                    for part in delta.content:
+                        if isinstance(part, str):
+                            curr_content += part
+                        elif isinstance(part, dict):
+                            curr_content += part.get("text", "")
+                        elif hasattr(part, "text"):
+                            curr_content += part.text
+                else:
+                    curr_content = delta.content or ""
+                # ---------------------------------------------------------
 
                 new_content = prev_content if finish_reason == None else (prev_content + curr_content)
 
