@@ -485,7 +485,7 @@ async def on_message(new_msg: discord.Message) -> None:
             full_response = "".join(response_contents)
 
             if "<think>" in full_response:
-                logging.info("Removing <think> block from response.")
+                logging.info("Removing <think> block from response")
                 full_response = THINK_BLOCK_REGEX.sub('', full_response).strip()
 
                 if full_response:
@@ -501,6 +501,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     except Exception:
         logging.exception("Error while generating response")
+        await new_msg.channel.send("⚠️ An error occurred.")
 
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)

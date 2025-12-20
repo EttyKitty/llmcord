@@ -12,6 +12,8 @@
 
 llmcord transforms Discord into a collaborative LLM frontend. It works with practically any LLM, remote or locally hosted.
 
+### New things added in this fork are marked with ⭐
+
 ## Features
 
 ### Reply-based chat system:
@@ -29,8 +31,9 @@ Additionally:
 
 ---
 
-### Model switching with `/model`:
-![image](https://github.com/user-attachments/assets/568e2f5c-bf32-4b77-ab57-198d9120f3d2)
+### Model switching:
+- **Global override:** Use `/model` to switch the default model used across all channels.
+- ⭐**Channel override:** Use `/channelmodel` to set a specific model for the current channel (useful for dedicated coding or RP channels).
 
 llmcord supports remote models from:
 - [OpenAI API](https://platform.openai.com/docs/models)
@@ -52,14 +55,18 @@ Or run local models with:
 ### And more:
 - Supports image attachments when using a vision model (like gpt-5, grok-4, claude-4, etc.)
 - Supports text file attachments (.txt, .py, .c, etc.)
+- ⭐Supports the entire chat as context: Using the `use_channel_context` option
+- ⭐Reasoning model support: Automatically handles `<think>` blocks from reasoning models like DeepSeek R1
+- ⭐Smart context management: Uses `tiktoken` to count tokens and manage the context window within limits
 - Customizable personality (aka system prompt)
-- User identity aware (OpenAI API and xAI API only)
+- User identity aware with OpenAI API and xAI API through their name object property
+- ⭐User identity aware with all other APIs through the `prefix_with_user_id` option
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
 - Hot reloading config (you can change settings without restarting the bot)
 - Displays helpful warnings when appropriate (like "⚠️ Only using last 25 messages" when the customizable message limit is exceeded)
 - Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls
 - Fully asynchronous
-- 1 Python file, ~200 lines of code
+- 1 Python file, ~350 lines of code
 
 ## Instructions
 
@@ -80,10 +87,12 @@ Or run local models with:
 | **max_text** | The maximum amount of text allowed in a single message, including text from file attachments. (Default: `100,000`) |
 | **max_images** | The maximum number of image attachments allowed in a single message. (Default: `5`)<br /><br />**Only applicable when using a vision model.** |
 | **max_messages** | The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped. (Default: `25`) |
+| ⭐**max_input_tokens** | The maximum number of tokens allowed in the input context (text + images). When this limit is reached, older messages are dropped from the context. Uses `cl100k_base` encoding (GPT-4 standard). (Default: `4096`) |
 | **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often. (Default: `false`)<br /><br />**Also disables streamed responses and warning messages.** |
 | **allow_dms** | Set to `false` to disable direct message access. (Default: `true`) |
-| **use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
-| **prefix_with_user_id** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
+| ⭐**use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
+| ⭐**force_reply_chains** | Only used if `use_channel_context` is `true`. When set to `true`, replying to a specific message will force the bot to use the "reply chain" context mode instead of reading the whole channel history. (Default: `false`) |
+| ⭐**prefix_with_user_id** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
 | **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model` and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
 
 ### LLM settings:
@@ -94,7 +103,7 @@ Or run local models with:
 | **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
 | **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.** |
 
-3. Run the bot:
+## Run the bot
 
    **No Docker:**
    ```bash
@@ -112,6 +121,8 @@ Or run local models with:
 - If you're having issues, try my suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
 
 - Only models from OpenAI API and xAI API are "user identity aware" because only they support the "name" parameter in the message object. Hopefully more providers support this in the future.
+
+- ⭐If you use a model that outputs chain-of-thought in `<think>` tags (like DeepSeek R1), the bot will automatically strip these tags (and contents) from the final response to keep the chat clean, and log that it did so.
 
 - PRs are welcome :)
 
