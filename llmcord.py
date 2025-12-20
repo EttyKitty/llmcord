@@ -213,6 +213,8 @@ async def on_message(new_msg: discord.Message) -> None:
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
 
+    logging.info(f"Message received. User: {new_msg.author.name}, ID:{new_msg.author.id}, Content: {new_msg.content}")
+
     config = await asyncio.to_thread(get_config)
 
     if not is_message_allowed(new_msg, config):
@@ -385,7 +387,7 @@ async def on_message(new_msg: discord.Message) -> None:
             if not use_channel_context and (node.fetch_parent_failed or (node.parent_msg and len(messages) == max_messages)):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
 
-    logging.info(f"Context ready. Messages: {len(messages)}. Attachments in new msg: {len(new_msg.attachments)}")
+    logging.info(f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}")
 
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
@@ -420,7 +422,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                 if not first_chunk_received:
-                    logging.info("First chunk received from LLM.")
+                    logging.info("First chunk received from LLM")
                     first_chunk_received = True
 
                 if finish_reason != None:
@@ -494,6 +496,8 @@ async def on_message(new_msg: discord.Message) -> None:
             if use_plain_responses:
                 for content in response_contents:
                     await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
+
+            logging.info("Response ready")
 
     except Exception:
         logging.exception("Error while generating response")
