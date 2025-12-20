@@ -21,6 +21,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# --- Regex Patterns ---
+# Matches characters NOT allowed in usernames (alphanumeric, underscore, dash only)
+USER_NAME_SANITIZER = re.compile(r'[^a-zA-Z0-9_-]')
+# Matches <think> blocks (for reasoning models)
+THINK_BLOCK_REGEX = re.compile(r'<think>.*?</think>', flags=re.DOTALL)
+
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
@@ -329,7 +335,7 @@ async def on_message(new_msg: discord.Message) -> None:
             if content:
                 payload = dict(content=content, role=node.role)
                 if accept_usernames and node.user_id and node.user_name:
-                    sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '', node.user_name)[:64]
+                    sanitized_name = USER_NAME_SANITIZER.sub('', node.user_name)[:64]
                     payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
                 elif accept_usernames and node.user_id:
                     payload["name"] = str(node.user_id)
@@ -444,7 +450,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
             if "<think>" in full_response:
                 logging.info("Removing <think> block from response.")
-                full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
+                full_response = THINK_BLOCK_REGEX.sub('', full_response).strip()
 
                 if full_response:
                     response_contents = [full_response[i:i+max_message_length] for i in range(0, len(full_response), max_message_length)]
