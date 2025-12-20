@@ -127,39 +127,63 @@ def is_message_allowed(msg: discord.Message, config: dict) -> bool:
     return True
 
 
-@discord_bot.tree.command(name="model", description="View or switch the current model for this channel")
+@discord_bot.tree.command(name="model", description="Switch the default default model (affects all channels)")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
-    curr_model = channel_models.get(interaction.channel_id, default_model)
+    global default_model
 
-    if model == curr_model:
-        output = f"Current model: `{curr_model}`"
-    else:
-        # Permission check for changing models
-        if interaction.user.id in config["permissions"]["users"]["admin_ids"]:
-            channel_models[interaction.channel_id] = model
-            output = f"Model switched to: `{model}`"
-            logging.info(f"Admin {interaction.user.name} switched model to {model} in {interaction.channel_id}")
-        else:
-            output = "You don't have permission to change the model."
-            logging.info(f"User {interaction.user.name} tried to switch model but was denied.")
+    # Permission Check
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("You don't have permission to change the default model.", ephemeral=True)
+        logging.info(f"User {interaction.user.name} tried to switch default model but was denied.")
+        return
 
-    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+    if model == default_model:
+        await interaction.response.send_message(f"Default model is already: `{default_model}`", ephemeral=True)
+        return
 
+    default_model = model
+    
+    # Logging with Channel Name
+    channel_name = getattr(interaction.channel, "name", "DM")
+    logging.info(f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})")
+    
+    await interaction.response.send_message(f"**Default model** switched to: `{model}`")
 
 @model_command.autocomplete("model")
 async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-    global config
-
-    active_model = channel_models.get(interaction.channel_id, default_model)
-
-    if curr_str == "":
-        config = await asyncio.to_thread(get_config)
-
-    choices = [Choice(name=f"◉ {active_model} (current)", value=active_model)] if curr_str.lower() in active_model.lower() else []
-    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != active_model and curr_str.lower() in model.lower()]
-
+    # Highlights the current GLOBAL model
+    choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if curr_str.lower() in default_model.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != default_model and curr_str.lower() in model.lower()]
     return choices[:25]
 
+@discord_bot.tree.command(name="channelmodel", description="Switch the model for THIS channel only")
+async def channel_model_command(interaction: discord.Interaction, model: str) -> None:
+    # Permission Check
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("You don't have permission to change the channel model.", ephemeral=True)
+        logging.info(f"User {interaction.user.name} tried to switch CHANNEL model but was denied.")
+        return
+
+    # Update the override
+    channel_models[interaction.channel_id] = model
+
+    # Logging with Channel Name
+    channel_name = getattr(interaction.channel, "name", "DM")
+    logging.info(f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name}")
+
+    await interaction.response.send_message(f"**Channel model** set to: `{model}`")
+
+@channel_model_command.autocomplete("model")
+async def channel_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    # Determine what is currently active in this channel (Override OR Default)
+    current_active = channel_models.get(interaction.channel_id, default_model)
+    is_overridden = interaction.channel_id in channel_models
+
+    status_text = "(current override)" if is_overridden else "(current default)"
+    
+    choices = [Choice(name=f"◉ {current_active} {status_text}", value=current_active)] if curr_str.lower() in current_active.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != current_active and curr_str.lower() in model.lower()]
+    return choices[:25]
 
 @discord_bot.event
 async def on_ready() -> None:
