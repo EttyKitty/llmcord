@@ -59,7 +59,7 @@ Or run local models with:
 - ⭐Reasoning model support: Automatically handles `<think>` blocks from reasoning models like DeepSeek R1
 - ⭐Smart context management: Uses `tiktoken` to count tokens and manage the context window within limits
 - Customizable personality (aka system prompt)
-- User identity aware with OpenAI API and xAI API through their name object property
+- User identity aware with OpenAI API and xAI API through the `name` parameter in the message object
 - ⭐User identity aware with all other APIs through the `prefix_with_user_id` option
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
 - Hot reloading config (you can change settings without restarting the bot)
@@ -68,20 +68,33 @@ Or run local models with:
 - Fully asynchronous
 - 1 Python file, ~350 lines of code
 
-## Instructions
+## Setting up and Running
 
 1. Clone the repo:
    ```bash
    git clone https://github.com/jakobdylanc/llmcord
    ```
+2. Create a copy of `config-example.yaml` named `config.yaml` and set it up.
+3. Run the bot
 
-2. Create a copy of "config-example.yaml" named "config.yaml" and set it up:
+   **No Docker:**
+   ```bash
+   python -m pip install -U -r requirements.txt
+   python llmcord.py
+   ```
+
+   **With Docker:**
+   ```bash
+   docker compose up
+   ```
+
+## Config settings
 
 ### Discord settings:
 
 | Setting | Description |
 | --- | --- |
-| **bot_token** | Create a new Discord bot at [discord.com/developers/applications](https://discord.com/developers/applications) and generate a token under the "Bot" tab. Also enable "MESSAGE CONTENT INTENT". |
+| **bot_token** | Create a new Discord bot at [discord.com/developers/applications](https://discord.com/developers/applications) and generate a token under the "Bot" tab. Also enable `MESSAGE CONTENT INTENT`. |
 | **client_id** | Found under the "OAuth2" tab of the Discord bot you just made. |
 | **status_message** | Set a custom message that displays on the bot's Discord profile.<br /><br />**Max 128 characters.** |
 | **max_text** | The maximum amount of text allowed in a single message, including text from file attachments. (Default: `100,000`) |
@@ -103,27 +116,10 @@ Or run local models with:
 | **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
 | **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.** |
 
-## Run the bot
-
-   **No Docker:**
-   ```bash
-   python -m pip install -U -r requirements.txt
-   python llmcord.py
-   ```
-
-   **With Docker:**
-   ```bash
-   docker compose up
-   ```
-
 ## Notes
 
 - If you're having issues, try my suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
-
-- Only models from OpenAI API and xAI API are "user identity aware" because only they support the "name" parameter in the message object. Hopefully more providers support this in the future.
-
 - ⭐If you use a model that outputs chain-of-thought in `<think>` tags (like DeepSeek R1), the bot will automatically strip these tags (and contents) from the final response to keep the chat clean, and log that it did so.
-
 - PRs are welcome :)
 
 ## Star History
