@@ -393,15 +393,36 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}")
 
+    # --- Placeholders ---
+    now = datetime.now().astimezone()
+    user_roles = getattr(new_msg.author, "roles", [])
+    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
+    placeholders = {
+        "{date}": now.strftime("%B %d %Y"),
+        "{time}": now.strftime("%H:%M:%S %Z%z"),
+        "{bot_name}": discord_bot.user.display_name,
+        "{bot_id}": str(discord_bot.user.id),
+        "{model}": model,
+        "{provider}": provider,
+        "{user_display_name}": new_msg.author.display_name,
+        "{user_id}": str(new_msg.author.id),
+        "{user_roles}": user_roles_str,
+        "{guild_name}": new_msg.guild.name if new_msg.guild else "Direct Messages",
+        "{channel_name}": getattr(new_msg.channel, "name", "DM"),
+        "{channel_topic}": getattr(new_msg.channel, "topic", "") or "",
+        "{channel_nsfw}": str(getattr(new_msg.channel, "nsfw", False)),
+    }
+
+    def replace_placeholders(text: str) -> str:
+        for key, value in placeholders.items():
+            text = text.replace(key, str(value))
+        return text.strip()
+
     if system_prompt := config.get("system_prompt"):
-        now = datetime.now().astimezone()
-        system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
-        messages.append(dict(role="system", content=system_prompt))
+        messages.append(dict(role="system", content=replace_placeholders(system_prompt)))
 
     if post_history_prompt := config.get("post_history_prompt"):
-        now = datetime.now().astimezone()
-        post_history_prompt = post_history_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
-        messages.insert(0, dict(role="system", content=post_history_prompt))
+        messages.insert(0, dict(role="system", content=replace_placeholders(post_history_prompt)))
 
     # --- Response Generation ---
     curr_content = finish_reason = None
