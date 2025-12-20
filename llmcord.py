@@ -14,9 +14,11 @@ import httpx
 from openai import AsyncOpenAI
 import yaml
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
@@ -77,9 +79,10 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
         if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
             curr_model = model
             output = f"Model switched to: `{model}`"
-            logging.info(output)
+            logging.info(f"Admin {interaction.user.name} switched model to {model}")
         else:
             output = "You don't have permission to change the model."
+            logging.info(f"User {interaction.user.name} tried to switch model but was denied.")
 
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
@@ -100,8 +103,8 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
-        logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
-
+        logging.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
+    logging.info(f"Bot ready. Logged in as {discord_bot.user}")
     await discord_bot.tree.sync()
 
 
@@ -114,19 +117,18 @@ async def on_message(new_msg: discord.Message) -> None:
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
 
+    # --- Permission Checks ---
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
     config = await asyncio.to_thread(get_config)
 
     allow_dms = config.get("allow_dms", True)
-
     use_channel_context = config.get("use_channel_context", False)
     prefix_with_user_id = config.get("prefix_with_user_id", False)
     force_reply_chains = config.get("force_reply_chains", False)
 
     permissions = config["permissions"]
-
     user_is_admin = new_msg.author.id in permissions["users"]["admin_ids"]
 
     (allowed_user_ids, blocked_user_ids), (allowed_role_ids, blocked_role_ids), (allowed_channel_ids, blocked_channel_ids) = (
@@ -142,11 +144,12 @@ async def on_message(new_msg: discord.Message) -> None:
     is_bad_channel = not is_good_channel or any(id in blocked_channel_ids for id in channel_ids)
 
     if is_bad_user or is_bad_channel:
+        logging.info(f"Message blocked. User: {new_msg.author.name} (Bad: {is_bad_user}), Channel: {new_msg.channel.id} (Bad: {is_bad_channel})")
         return
 
+    # --- Provider Setup ---
     provider_slash_model = curr_model
     provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-
     provider_config = config["providers"][provider]
 
     base_url = provider_config["base_url"]
@@ -154,7 +157,6 @@ async def on_message(new_msg: discord.Message) -> None:
     openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     model_parameters = config["models"].get(provider_slash_model, None)
-
     extra_headers = provider_config.get("extra_headers")
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
@@ -166,37 +168,26 @@ async def on_message(new_msg: discord.Message) -> None:
     max_images = config.get("max_images", 5) if accept_images else 0
     max_messages = config.get("max_messages", 25)
 
-    # Build message chain and set user warnings
-    messages = []
-    user_warnings = set()
-    curr_msg = new_msg
-
-    # ------------------------------------------------------------------
-    # Build the list of messages to feed the LLM
-    # ------------------------------------------------------------------
+    # --- Context Building ---
     messages: list[dict] = []
     user_warnings: set[str] = set()
     message_history: list[discord.Message] = []
 
-    # If the user is replying to a specific message, we force reply-chain mode
-    # even if channel context is enabled.
+    # Force reply-chain mode if replying to a specific message
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
         use_channel_context = False
 
+    logging.info(f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}")
+
     if use_channel_context:
-        # ---- Full‑channel mode -------------------------------------------------
-        # Discord returns newest → oldest, so we start with the current message
         message_history.append(new_msg)
         async for msg in new_msg.channel.history(limit=max_messages - 1, before=new_msg):
             message_history.append(msg)
-        # Ensure we never exceed max_messages
         message_history = message_history[:max_messages]
     else:
-        # ---- Reply‑chain mode (original logic) ---------------------------------
         curr = new_msg
         while curr and len(message_history) < max_messages:
             message_history.append(curr)
-            # Resolve the next parent (same logic as original)
             try:
                 if (
                     curr.reference is None
@@ -220,13 +211,14 @@ async def on_message(new_msg: discord.Message) -> None:
             except (discord.NotFound, discord.HTTPException):
                 logging.exception("Error walking reply chain")
                 curr = None
-    # ------------------------------------------------------------------
-    # Process each message (shared for both modes)
-    # ------------------------------------------------------------------
+
+    # --- Message Processing & Payload Construction ---
     for msg in message_history:
         if len(messages) >= max_messages:
             break
+        
         node = msg_nodes.setdefault(msg.id, MsgNode())
+        
         async with node.lock:
             if node.text is None:
                 cleaned = msg.content.removeprefix(discord_bot.user.mention).lstrip()
@@ -235,6 +227,7 @@ async def on_message(new_msg: discord.Message) -> None:
                     if att.content_type and any(att.content_type.startswith(t) for t in ("text", "image"))
                 ]
                 att_resps = await asyncio.gather(*[httpx_client.get(a.url) for a in good_attachments])
+                
                 node.text = "\n".join(
                     ([cleaned] if cleaned else [])
                     + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in msg.embeds]
@@ -252,39 +245,30 @@ async def on_message(new_msg: discord.Message) -> None:
                 node.user_id = msg.author.id if node.role == "user" else None
                 node.user_name = msg.author.display_name if node.role == "user" else None
                 node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
-                # Parent linking only needed for reply‑chain mode
-                if not use_channel_context:
-                    # (same parent‑fetch logic as above, omitted for brevity)
-                    pass
-            formatted_text = node.text[:max_text]  # base text (already trimmed)
+
+            formatted_text = node.text[:max_text]
             
-            # Apply prefix only when:
-            #   • toggle is enabled
-            #   • provider does NOT support native usernames (accept_usernames == False)
-            #   • the message role is "user"
-            #   • we have a valid Discord user Name
+            # Apply user ID prefix if enabled and native usernames aren't supported
             if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_name is not None:
                 formatted_text = f"{node.user_name}(ID:{node.user_id}): {formatted_text}"
-                # keep node.text consistent for any later use
                 node.text = formatted_text
             
-            # ---- Build LLM message payload ----
+            # Construct content payload
             if node.images[:max_images]:
                 content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
             else:
                 content = formatted_text
+            
             if content:
                 payload = dict(content=content, role=node.role)
-                # Preserve native name field for providers that support it
                 if accept_usernames and node.user_id and node.user_name:
-                    # OpenAI only allows a-z, A-Z, 0-9, _, - in the 'name' field.
-                    # We try to sanitize the display name. If it results in an empty string (e.g. all emojis), we fallback to the ID.
                     sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '', node.user_name)[:64]
                     payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
                 elif accept_usernames and node.user_id:
                     payload["name"] = str(node.user_id)
                 messages.append(payload)
-            # ---- Warnings ----
+
+            # Warnings
             if len(node.text) > max_text:
                 user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
             if len(node.images) > max_images:
@@ -294,19 +278,14 @@ async def on_message(new_msg: discord.Message) -> None:
             if not use_channel_context and (node.fetch_parent_failed or (node.parent_msg and len(messages) == max_messages)):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
 
-    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
+    logging.info(f"Context ready. Messages: {len(messages)}. Attachments in new msg: {len(new_msg.attachments)}")
 
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
-
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
-        # Commented out, because it messes up with the end-of-prompt flags, like /nothink for GML. Users can specify this instruction on their own, and it can be added to config-example.
-        # if accept_usernames:
-        #     system_prompt += "\n\nUser's names are their Discord IDs and should be typed as '<@ID>'."
-
         messages.append(dict(role="system", content=system_prompt))
 
-    # Generate and send response message(s) (can be multiple if response is long)
+    # --- Response Generation ---
     curr_content = finish_reason = None
     response_msgs = []
     response_contents = []
@@ -328,8 +307,15 @@ async def on_message(new_msg: discord.Message) -> None:
         await msg_nodes[response_msg.id].lock.acquire()
 
     try:
+        logging.info(f"Sending request to {provider} ({model})...")
         async with new_msg.channel.typing():
+            first_chunk_received = False
+            
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+                if not first_chunk_received:
+                    logging.info("First chunk received from LLM.")
+                    first_chunk_received = True
+
                 if finish_reason != None:
                     break
 
@@ -340,7 +326,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 prev_content = curr_content or ""
                 
-                # --- Fix for Mistral/Multimodal returning list content ---
+                # Handle potential list content (Mistral/Multimodal quirks)
                 delta = choice.delta
                 if isinstance(delta.content, list):
                     curr_content = ""
@@ -353,7 +339,6 @@ async def on_message(new_msg: discord.Message) -> None:
                             curr_content += part.text
                 else:
                     curr_content = delta.content or ""
-                # ---------------------------------------------------------
 
                 new_content = prev_content if finish_reason == None else (prev_content + curr_content)
 
@@ -385,16 +370,15 @@ async def on_message(new_msg: discord.Message) -> None:
 
                         last_task_time = datetime.now().timestamp()
 
-            # --- logic to strip <think> blocks before sending plain response ---
-            # 1. Join all accumulated parts into one string (in case <think> spanned a chunk boundary)
+            logging.info(f"Stream finished. Reason: {finish_reason}")
+
+            # --- Post-Processing: Strip <think> blocks ---
             full_response = "".join(response_contents)
             
-            # 2. Use regex to remove the block
             if "<think>" in full_response:
-                logging.info(f"\n\nFound a thinking block! Stripping now!\n")
+                logging.info("Removing <think> block from response.")
                 full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
                 
-                # 3. Re-chunk the cleaned text back into response_contents so it fits the max length
                 if full_response:
                     response_contents = [full_response[i:i+max_message_length] for i in range(0, len(full_response), max_message_length)]
                 else:
@@ -411,7 +395,7 @@ async def on_message(new_msg: discord.Message) -> None:
         msg_nodes[response_msg.id].text = "".join(response_contents)
         msg_nodes[response_msg.id].lock.release()
 
-    # Delete oldest MsgNodes (lowest message IDs) from the cache
+    # Prune old MsgNodes
     if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
         for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
