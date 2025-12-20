@@ -13,6 +13,7 @@ from discord.ui import LayoutView, TextDisplay
 import httpx
 from openai import AsyncOpenAI
 import yaml
+import tiktoken
 
 # Configure logging
 logging.basicConfig(
@@ -20,6 +21,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# Initialize the tokenizer
+# cl100k_base is used by GPT-4, GPT-3.5-turbo, and is a good proxy for others.
+TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 # --- Regex Patterns ---
 # Matches characters NOT allowed in usernames (alphanumeric, underscore, dash only)
@@ -236,6 +241,7 @@ async def on_message(new_msg: discord.Message) -> None:
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
     max_messages = config.get("max_messages", 25)
+    max_input_tokens = config.get("max_input_tokens", 4096)
 
     use_channel_context = config.get("use_channel_context", False)
     prefix_with_user_id = config.get("prefix_with_user_id", False)
@@ -245,6 +251,11 @@ async def on_message(new_msg: discord.Message) -> None:
     messages: list[dict] = []
     user_warnings: set[str] = set()
     message_history: list[discord.Message] = []
+    total_tokens = 0
+    
+    # Reserve tokens for the system prompt
+    if config.get("system_prompt"):
+        total_tokens += len(TOKENIZER.encode(config["system_prompt"]))
 
     # Force reply-chain mode if replying to a specific message
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
@@ -326,6 +337,27 @@ async def on_message(new_msg: discord.Message) -> None:
                 formatted_text = f"{node.user_name}(ID:{node.user_id}): {formatted_text}"
                 node.text = formatted_text
 
+            # --- Token Counting ---
+            # 1. Calculate Text Tokens
+            text_tokens = len(TOKENIZER.encode(formatted_text))
+            
+            # 2. Calculate Image Tokens
+            # A safe "buffer" average is 1000 tokens per image.
+            image_tokens = 0
+            if node.images:
+                image_tokens = len(node.images) * 1000
+            
+            msg_tokens = text_tokens + image_tokens
+
+            # 3. Check if adding this message exceeds the limit
+            if total_tokens + msg_tokens > max_input_tokens:
+                if len(messages) == 0:
+                    pass
+                else:
+                    break
+            
+            total_tokens += msg_tokens
+
             # Construct content payload
             if node.images[:max_images]:
                 content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
@@ -344,6 +376,8 @@ async def on_message(new_msg: discord.Message) -> None:
             # Warnings
             if len(node.text) > max_text:
                 user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
+            if total_tokens > max_input_tokens:
+                user_warnings.add("⚠️ Context limit reached (older messages trimmed)")
             if len(node.images) > max_images:
                 user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
             if node.has_bad_attachments:
