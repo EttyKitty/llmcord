@@ -259,6 +259,10 @@ async def on_message(new_msg: discord.Message) -> None:
     if config.get("system_prompt"):
         total_tokens += len(TOKENIZER.encode(config["system_prompt"]))
 
+    # Reserve tokens for the extra prompt (post-history injection)
+    if config.get("post_history_prompt"):
+        total_tokens += len(TOKENIZER.encode(config["post_history_prompt"]))
+
     # Force reply-chain mode if replying to a specific message
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
         use_channel_context = False
@@ -393,6 +397,11 @@ async def on_message(new_msg: discord.Message) -> None:
         now = datetime.now().astimezone()
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
         messages.append(dict(role="system", content=system_prompt))
+
+    if post_history_prompt := config.get("post_history_prompt"):
+        now = datetime.now().astimezone()
+        post_history_prompt = post_history_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        messages.insert(0, dict(role="system", content=post_history_prompt))
 
     # --- Response Generation ---
     curr_content = finish_reason = None
