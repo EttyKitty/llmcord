@@ -39,7 +39,9 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
 
 
 config = get_config()
-curr_model = next(iter(config["models"]))
+default_model = next(iter(config["models"]))
+channel_models = {}
+openai_clients = {}
 
 msg_nodes = {}
 last_task_time = 0
@@ -69,17 +71,74 @@ class MsgNode:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-@discord_bot.tree.command(name="model", description="View or switch the current model")
+
+def get_openai_client(provider_config: dict) -> AsyncOpenAI:
+    base_url = provider_config["base_url"]
+
+    if base_url not in openai_clients:
+        openai_clients[base_url] = AsyncOpenAI(
+            base_url=base_url,
+            api_key=provider_config.get("api_key", "sk-no-key-required"),
+            http_client=httpx_client
+        )
+    return openai_clients[base_url]
+
+def is_message_allowed(msg: discord.Message, config: dict) -> bool:
+    is_dm = msg.channel.type == discord.ChannelType.private
+    permissions = config["permissions"]
+
+    # Admin check
+    if msg.author.id in permissions["users"]["admin_ids"]:
+        return True
+
+    # User/Role Checks
+    role_ids = set(role.id for role in getattr(msg.author, "roles", ()))
+    allowed_users = permissions["users"]["allowed_ids"]
+    blocked_users = permissions["users"]["blocked_ids"]
+    allowed_roles = permissions["roles"]["allowed_ids"]
+    blocked_roles = permissions["roles"]["blocked_ids"]
+
+    allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
+
+    is_good_user = (allow_all_users or
+                    msg.author.id in allowed_users or
+                    any(id in allowed_roles for id in role_ids))
+
+    is_bad_user = (not is_good_user or
+                    msg.author.id in blocked_users or
+                    any(id in blocked_roles for id in role_ids))
+
+    if is_bad_user:
+        return False
+
+    # Channel Checks
+    channel_ids = set(filter(None, (msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None))))
+    allowed_channels = permissions["channels"]["allowed_ids"]
+    blocked_channels = permissions["channels"]["blocked_ids"]
+    allow_dms = config.get("allow_dms", True)
+
+    allow_all_channels = not allowed_channels
+    is_good_channel = allow_dms if is_dm else (allow_all_channels or any(id in allowed_channels for id in channel_ids))
+    is_bad_channel = not is_good_channel or any(id in blocked_channels for id in channel_ids)
+
+    if is_bad_channel:
+        return False
+
+    return True
+
+
+@discord_bot.tree.command(name="model", description="View or switch the current model for this channel")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
-    global curr_model
+    curr_model = channel_models.get(interaction.channel_id, default_model)
 
     if model == curr_model:
         output = f"Current model: `{curr_model}`"
     else:
-        if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
-            curr_model = model
+        # Permission check for changing models
+        if interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+            channel_models[interaction.channel_id] = model
             output = f"Model switched to: `{model}`"
-            logging.info(f"Admin {interaction.user.name} switched model to {model}")
+            logging.info(f"Admin {interaction.user.name} switched model to {model} in {interaction.channel_id}")
         else:
             output = "You don't have permission to change the model."
             logging.info(f"User {interaction.user.name} tried to switch model but was denied.")
@@ -91,11 +150,13 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
 async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     global config
 
+    active_model = channel_models.get(interaction.channel_id, default_model)
+
     if curr_str == "":
         config = await asyncio.to_thread(get_config)
 
-    choices = [Choice(name=f"◉ {curr_model} (current)", value=curr_model)] if curr_str.lower() in curr_model.lower() else []
-    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()]
+    choices = [Choice(name=f"◉ {active_model} (current)", value=active_model)] if curr_str.lower() in active_model.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != active_model and curr_str.lower() in model.lower()]
 
     return choices[:25]
 
@@ -117,44 +178,22 @@ async def on_message(new_msg: discord.Message) -> None:
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
 
-    # --- Permission Checks ---
-    role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
-    channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
-
     config = await asyncio.to_thread(get_config)
 
-    allow_dms = config.get("allow_dms", True)
-    use_channel_context = config.get("use_channel_context", False)
-    prefix_with_user_id = config.get("prefix_with_user_id", False)
-    force_reply_chains = config.get("force_reply_chains", False)
-
-    permissions = config["permissions"]
-    user_is_admin = new_msg.author.id in permissions["users"]["admin_ids"]
-
-    (allowed_user_ids, blocked_user_ids), (allowed_role_ids, blocked_role_ids), (allowed_channel_ids, blocked_channel_ids) = (
-        (perm["allowed_ids"], perm["blocked_ids"]) for perm in (permissions["users"], permissions["roles"], permissions["channels"])
-    )
-
-    allow_all_users = not allowed_user_ids if is_dm else not allowed_user_ids and not allowed_role_ids
-    is_good_user = user_is_admin or allow_all_users or new_msg.author.id in allowed_user_ids or any(id in allowed_role_ids for id in role_ids)
-    is_bad_user = not is_good_user or new_msg.author.id in blocked_user_ids or any(id in blocked_role_ids for id in role_ids)
-
-    allow_all_channels = not allowed_channel_ids
-    is_good_channel = user_is_admin or allow_dms if is_dm else allow_all_channels or any(id in allowed_channel_ids for id in channel_ids)
-    is_bad_channel = not is_good_channel or any(id in blocked_channel_ids for id in channel_ids)
-
-    if is_bad_user or is_bad_channel:
-        logging.info(f"Message blocked. User: {new_msg.author.name} (Bad: {is_bad_user}), Channel: {new_msg.channel.id} (Bad: {is_bad_channel})")
+    if not is_message_allowed(new_msg, config):
+        logging.info(f"Message blocked. User: {new_msg.author.name}, Channel: {new_msg.channel.id}")
         return
 
     # --- Provider Setup ---
-    provider_slash_model = curr_model
-    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-    provider_config = config["providers"][provider]
+    provider_slash_model = channel_models.get(new_msg.channel.id, default_model)
+    try:
+        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        provider_config = config["providers"][provider]
 
-    base_url = provider_config["base_url"]
-    api_key = provider_config.get("api_key", "sk-no-key-required")
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        openai_client = get_openai_client(provider_config)
+    except Exception as e:
+        logging.error(f"Failed to load provider configuration for {provider_slash_model}: {e}")
+        return
 
     model_parameters = config["models"].get(provider_slash_model, None)
     extra_headers = provider_config.get("extra_headers")
@@ -167,6 +206,10 @@ async def on_message(new_msg: discord.Message) -> None:
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
     max_messages = config.get("max_messages", 25)
+
+    use_channel_context = config.get("use_channel_context", False)
+    prefix_with_user_id = config.get("prefix_with_user_id", False)
+    force_reply_chains = config.get("force_reply_chains", False)
 
     # --- Context Building ---
     messages: list[dict] = []
@@ -216,9 +259,9 @@ async def on_message(new_msg: discord.Message) -> None:
     for msg in message_history:
         if len(messages) >= max_messages:
             break
-        
+
         node = msg_nodes.setdefault(msg.id, MsgNode())
-        
+
         async with node.lock:
             if node.text is None:
                 cleaned = msg.content.removeprefix(discord_bot.user.mention).lstrip()
@@ -227,7 +270,7 @@ async def on_message(new_msg: discord.Message) -> None:
                     if att.content_type and any(att.content_type.startswith(t) for t in ("text", "image"))
                 ]
                 att_resps = await asyncio.gather(*[httpx_client.get(a.url) for a in good_attachments])
-                
+
                 node.text = "\n".join(
                     ([cleaned] if cleaned else [])
                     + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in msg.embeds]
@@ -247,18 +290,18 @@ async def on_message(new_msg: discord.Message) -> None:
                 node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
 
             formatted_text = node.text[:max_text]
-            
+
             # Apply user ID prefix if enabled and native usernames aren't supported
             if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_name is not None:
                 formatted_text = f"{node.user_name}(ID:{node.user_id}): {formatted_text}"
                 node.text = formatted_text
-            
+
             # Construct content payload
             if node.images[:max_images]:
                 content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
             else:
                 content = formatted_text
-            
+
             if content:
                 payload = dict(content=content, role=node.role)
                 if accept_usernames and node.user_id and node.user_name:
@@ -310,7 +353,7 @@ async def on_message(new_msg: discord.Message) -> None:
         logging.info(f"Sending request to {provider} ({model})...")
         async with new_msg.channel.typing():
             first_chunk_received = False
-            
+
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                 if not first_chunk_received:
                     logging.info("First chunk received from LLM.")
@@ -325,7 +368,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 finish_reason = choice.finish_reason
 
                 prev_content = curr_content or ""
-                
+
                 # Handle potential list content (Mistral/Multimodal quirks)
                 delta = choice.delta
                 if isinstance(delta.content, list):
@@ -374,11 +417,11 @@ async def on_message(new_msg: discord.Message) -> None:
 
             # --- Post-Processing: Strip <think> blocks ---
             full_response = "".join(response_contents)
-            
+
             if "<think>" in full_response:
                 logging.info("Removing <think> block from response.")
                 full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
-                
+
                 if full_response:
                     response_contents = [full_response[i:i+max_message_length] for i in range(0, len(full_response), max_message_length)]
                 else:
