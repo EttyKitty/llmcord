@@ -30,13 +30,10 @@ class RequestLogger:
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
 
-        # Clear existing handlers to avoid duplicates if code reloads
         if self.logger.handlers:
             self.logger.handlers.clear()
 
-        # File handler
-        handler = logging.FileHandler(filename, encoding="utf-8")
-        # We use a raw formatter because we want pure JSON, not "INFO: ..."
+        handler = logging.FileHandler(filename, mode="w", encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(handler)
 
@@ -74,7 +71,7 @@ class RequestLogger:
             logging.error(f"Failed to log LLM request: {e}")
 
 
-# Initialize the logger
+# Initialize the RequestLogger
 request_logger = RequestLogger()
 
 # Configure logging
