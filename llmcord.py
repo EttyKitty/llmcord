@@ -694,6 +694,8 @@ async def on_message(new_msg: discord.Message) -> None:
         ", ".join([role.name for role in user_roles if role.name != "@everyone"])
         or "None"
     )
+    guild_emojis = getattr(new_msg.guild, "emojis", [])
+    guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
     placeholders = {
         "{date}": now.strftime("%B %d %Y"),
         "{time}": now.strftime("%H:%M:%S %Z%z"),
@@ -705,6 +707,7 @@ async def on_message(new_msg: discord.Message) -> None:
         "{user_id}": str(new_msg.author.id),
         "{user_roles}": user_roles_str,
         "{guild_name}": new_msg.guild.name if new_msg.guild else "Direct Messages",
+        "{guild_emojis}": guild_emojis_str,
         "{channel_name}": getattr(new_msg.channel, "name", "DM"),
         "{channel_topic}": getattr(new_msg.channel, "topic", "") or "",
         "{channel_nsfw}": str(getattr(new_msg.channel, "nsfw", False)),

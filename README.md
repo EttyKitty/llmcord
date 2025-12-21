@@ -59,7 +59,7 @@ Or run local models with:
 - ⭐Reasoning model support: Automatically handles `<think>` blocks from reasoning models like DeepSeek R1
 - ⭐Smart context management: Uses `tiktoken` to count tokens and manage the context window within limits
 - Customizable personality (aka system prompt)
-- ⭐A bunch of placeholders to inject into the system prompt (like `{guild_name}` for the name of the server)
+- ⭐A bunch of placeholders to inject into the system prompt (like `{guild_name}` or `{user_roles}`)
 - User identity aware with OpenAI API and xAI API through the `name` parameter in the message object
 - ⭐User identity aware with all other APIs through the `prefix_users` option
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
@@ -121,7 +121,7 @@ Or run local models with:
 | --- | --- |
 | **providers** | Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry. Popular providers (`openai`, `ollama`, etc.) are already included.<br /><br />**Only supports OpenAI compatible APIs.**<br /><br />**Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data. See the included `azure-openai` provider for an example.** |
 | **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
-| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />⭐**Supported placeholders:**<br />`{date}`, `{time}`, `{bot_name}`, `{bot_id}`, `{model}`, `{provider}`, `{user_display_name}`, `{user_id}`, `{user_roles}`, `{guild_name}`, `{channel_name}`, `{channel_topic}`, `{channel_nsfw}`.<br /><br />Leave blank for no system prompt. |
+| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />⭐**Supported placeholders:**<br />`{date}`, `{time}`, `{bot_name}`, `{bot_id}`, `{model}`, `{provider}`, `{user_display_name}`, `{user_id}`, `{user_roles}`, `{guild_name}`, `{guild_emojis}`, `{channel_name}`, `{channel_topic}`, `{channel_nsfw}`.<br /><br />Leave blank for no system prompt. |
 | ⭐**post_history_prompt** | A prompt that is inserted at the very end of the conversation history (just before the model generates a response). This is highly effective for "reminding" the model of formatting rules, personality quirks, or jailbreaks that it might otherwise forget in long conversations. <br /><br />**Supports the same placeholders as `system_prompt`.** |
 
 ## Notes
