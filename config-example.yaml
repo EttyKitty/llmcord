@@ -14,6 +14,7 @@ allow_dms: true
 use_channel_context: false
 force_reply_chains: true
 prefix_users: true
+sanitize_response: false
 
 permissions:
   users:

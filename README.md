@@ -113,6 +113,7 @@ Or run local models with:
 | ⭐**use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
 | ⭐**force_reply_chains** | Only used if `use_channel_context` is `true`. When set to `true`, replying to a specific message will force the bot to use the "reply chain" context mode instead of reading the whole channel history. (Default: `false`) |
 | ⭐**prefix_users** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
+| ⭐**sanitize_response** | When set to `true`, the bot cleans up the AI's output before sending it. This converts 'smart' typography (curly quotes, em-dashes) to standard ASCII characters, and collapses excessive whitespace/newlines to keep messages compact. (Default: `false`) |
 
 ### LLM settings:
 

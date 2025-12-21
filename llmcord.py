@@ -97,9 +97,33 @@ TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 # --- Regex Patterns ---
 # Matches characters NOT allowed in usernames (alphanumeric, underscore, dash only)
-USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
+REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 # Matches <think> blocks (for reasoning models)
-THINK_BLOCK_REGEX = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+
+REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
+REGEX_MULTI_SPACE = re.compile(r" {2,}")
+REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
+
+TYPOGRAPHY_MAP = str.maketrans(
+    {
+        "“": '"',
+        "”": '"',  # Smart double quotes
+        "‘": "'",
+        "’": "'",  # Smart single quotes
+        "—": "-",  # Em-dash
+        "…": "...",  # Ellipsis
+    }
+)
+
+# TODO: Would be cool to add support for external regex loading, instead of hardcoded, like in SillyTavern
+def clean_response(text: str) -> str:
+    text = text.translate(TYPOGRAPHY_MAP)
+    text = REGEX_MULTI_SPACE.sub(" ", text)
+    text = REGEX_EXCESSIVE_NEWLINES.sub("\n\n", text)
+    text = REGEX_TRAILING_WHITESPACE.sub("", text)
+
+    return text.strip()
 
 VISION_MODEL_TAGS = (
     "claude",
@@ -410,6 +434,7 @@ async def on_message(new_msg: discord.Message) -> None:
     use_channel_context = config.get("use_channel_context", False)
     prefix_users = config.get("prefix_users", False)
     force_reply_chains = config.get("force_reply_chains", False)
+    sanitize_response = config.get("sanitize_response", False)
 
     # --- Context Building ---
     messages: list[dict] = []
@@ -630,7 +655,7 @@ async def on_message(new_msg: discord.Message) -> None:
         if content:
             payload = dict(content=content, role=node.role)
             if accept_usernames and node.user_id and node.user_display_name:
-                sanitized_name = USER_NAME_SANITIZER.sub("", node.user_display_name)[
+                sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name)[
                     :64
                 ]
                 payload["name"] = (
@@ -833,12 +858,18 @@ async def on_message(new_msg: discord.Message) -> None:
 
             logging.debug(f"Stream finished. Reason: {finish_reason}")
 
-            # --- Post-Processing: Strip <think> blocks ---
             full_response = "".join(response_contents)
 
+            # --- Post-Processing ---
+
+            # --- Strip AI giveaways ---
+            if sanitize_response:
+                full_response = clean_response(full_response)
+
+            # --- Strip <think> blocks ---
             if "<think>" in full_response:
                 logging.debug("Removing <think> block from response")
-                full_response = THINK_BLOCK_REGEX.sub("", full_response).strip()
+                full_response = REGEX_THINK_BLOCK.sub("", full_response).strip()
 
                 if full_response:
                     response_contents = [
