@@ -61,7 +61,7 @@ Or run local models with:
 - Customizable personality (aka system prompt)
 - ⭐A bunch of placeholders to inject into the system prompt (like `{guild_name}` for the name of the server)
 - User identity aware with OpenAI API and xAI API through the `name` parameter in the message object
-- ⭐User identity aware with all other APIs through the `prefix_with_user_id` option
+- ⭐User identity aware with all other APIs through the `prefix_users` option
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
 - Hot reloading config (you can change settings without restarting the bot)
 - Displays helpful warnings when appropriate (like "⚠️ Only using last 25 messages" when the customizable message limit is exceeded)
@@ -112,7 +112,7 @@ Or run local models with:
 | **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often. (Default: `false`)<br /><br />**Also disables streamed responses and warning messages.** |
 | ⭐**use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
 | ⭐**force_reply_chains** | Only used if `use_channel_context` is `true`. When set to `true`, replying to a specific message will force the bot to use the "reply chain" context mode instead of reading the whole channel history. (Default: `false`) |
-| ⭐**prefix_with_user_id** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
+| ⭐**prefix_users** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
 
 ### LLM settings:
 

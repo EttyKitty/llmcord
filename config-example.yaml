@@ -13,7 +13,7 @@ use_plain_responses: false
 allow_dms: true
 use_channel_context: false
 force_reply_chains: true
-prefix_with_user_id: true
+prefix_users: true
 
 permissions:
   users:

@@ -309,7 +309,7 @@ async def on_message(new_msg: discord.Message) -> None:
     max_input_tokens = config.get("max_input_tokens", 4096)
 
     use_channel_context = config.get("use_channel_context", False)
-    prefix_with_user_id = config.get("prefix_with_user_id", False)
+    prefix_users = config.get("prefix_users", False)
     force_reply_chains = config.get("force_reply_chains", False)
 
     # --- Context Building ---
@@ -427,7 +427,7 @@ async def on_message(new_msg: discord.Message) -> None:
         formatted_text = node.text[:max_text]
 
         # Apply user ID prefix if enabled and native usernames aren't supported
-        if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_display_name is not None:
+        if prefix_users and not accept_usernames and node.role == "user" and node.user_display_name is not None:
             formatted_text = f"{node.user_display_name}(ID:{node.user_id}): {formatted_text}"
             # node.text = formatted_text
 
