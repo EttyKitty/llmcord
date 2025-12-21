@@ -14,13 +14,75 @@ import httpx
 from openai import AsyncOpenAI
 import yaml
 import tiktoken
+import json
+import time
+
+# --- New Request Logger Class ---
+class RequestLogger:
+    """
+    Handles logging of LLM request payloads to a file.
+    Outputs pretty-printed JSON for readability.
+    """
+
+    def __init__(self, filename: str = "llm_requests.json"):
+        self.logger = logging.getLogger("request_logger")
+        self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
+
+        # Clear existing handlers to avoid duplicates if code reloads
+        if self.logger.handlers:
+            self.logger.handlers.clear()
+
+        # File handler
+        handler = logging.FileHandler(filename, encoding="utf-8")
+        # We use a raw formatter because we want pure JSON, not "INFO: ..."
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        self.logger.addHandler(handler)
+
+    def log(self, payload: dict[str, Any]) -> None:
+        """
+        Sanitizes and logs the request payload as a pretty-printed JSON object.
+        """
+        try:
+            # Create a shallow copy
+            log_entry = payload.copy()
+
+            # Inject timestamp for context (since we removed the log prefix)
+            log_entry["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Redact sensitive headers
+            if "extra_headers" in log_entry and log_entry["extra_headers"]:
+                headers = log_entry["extra_headers"].copy()
+                for key in headers:
+                    if any(sensitive in key.lower() for sensitive in ("api", "auth", "key", "token")):
+                        headers[key] = "REDACTED"
+                log_entry["extra_headers"] = headers
+
+            # Convert to Pretty JSON
+            # indent=4 makes it readable
+            log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
+            
+            # Log it (logging adds a newline automatically)
+            self.logger.info(log_message)
+        except Exception as e:
+            logging.error(f"Failed to log LLM request: {e}")
+
+# Initialize the logger
+request_logger = RequestLogger()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+logging.getLogger("discord").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+
 
 # Initialize the tokenizer
 # cl100k_base is used by GPT-4, GPT-3.5-turbo, and is a good proxy for others.
@@ -72,7 +134,7 @@ class MsgNode:
 
     role: Literal["user", "assistant"] = "assistant"
     user_id: Optional[int] = None
-    user_name: Optional[str] = None
+    user_display_name: Optional[str] = None
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
@@ -213,12 +275,13 @@ async def on_message(new_msg: discord.Message) -> None:
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
 
-    logging.info(f"Message received. User: {new_msg.author.name}, ID:{new_msg.author.id}, Content: {new_msg.content}")
+    logging.info(f"Message received. User: {new_msg.author.name} ID: {new_msg.author.id}")
+    start_time = time.perf_counter()
 
     config = await asyncio.to_thread(get_config)
 
     if not is_message_allowed(new_msg, config):
-        logging.info(f"Message blocked. User: {new_msg.author.name}, Channel: {new_msg.channel.id}")
+        logging.info(f"Message blocked. User: {new_msg.author.name} ID: {new_msg.author.id} Channel: {new_msg.channel.id}")
         return
 
     # --- Provider Setup ---
@@ -267,7 +330,7 @@ async def on_message(new_msg: discord.Message) -> None:
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
         use_channel_context = False
 
-    logging.info(f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}")
+    logging.debug(f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}")
 
     if use_channel_context:
         message_history.append(new_msg)
@@ -302,96 +365,121 @@ async def on_message(new_msg: discord.Message) -> None:
                 logging.exception("Error walking reply chain")
                 curr = None
 
+    # --- Parallel Message Processing ---
+    async def init_msg_node(msg: discord.Message):
+        node = msg_nodes.setdefault(msg.id, MsgNode())
+        
+        # Only acquire lock if we actually need to process
+        if node.text is None:
+            async with node.lock:
+                # Double-check after acquiring lock
+                if node.text is None:
+                    # 1. Clean Text
+                    # (Using the regex approach we discussed or the simple one)
+                    cleaned = msg.content.lstrip() 
+
+                    # 2. Handle Attachments
+                    good_attachments = [
+                        att for att in msg.attachments
+                        if att.content_type and any(att.content_type.startswith(t) for t in ("text", "image"))
+                    ]
+                    # Download all attachments for this message in parallel
+                    att_resps = await asyncio.gather(*[httpx_client.get(a.url) for a in good_attachments])
+
+                    # 3. Construct Node Text
+                    node.text = "\n".join(
+                        ([cleaned] if cleaned else [])
+                        + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in msg.embeds]
+                        + [c.content for c in msg.components if c.type == discord.ComponentType.text_display]
+                        + [r.text for a, r in zip(good_attachments, att_resps) if a.content_type.startswith("text")]
+                    )
+
+                    # 4. Construct Node Images
+                    node.images = [
+                        dict(
+                            type="image_url",
+                            image_url=dict(url=f"data:{a.content_type};base64,{b64encode(r.content).decode()}")
+                        )
+                        for a, r in zip(good_attachments, att_resps) if a.content_type.startswith("image")
+                    ]
+
+                    # 5. Metadata
+                    node.role = "assistant" if msg.author == discord_bot.user else "user"
+                    node.user_id = msg.author.id if node.role == "user" else None
+                    node.user_display_name = msg.author.display_name if node.role == "user" else None
+                    node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
+
+    logging.debug("Initializing history")
+
+
+    # Run initialization for all history messages in parallel
+    await asyncio.gather(*(init_msg_node(msg) for msg in message_history))
+
+    logging.debug("Building context")
+
     # --- Message Processing & Payload Construction ---
     for msg in message_history:
         if len(messages) >= max_messages:
             break
 
-        node = msg_nodes.setdefault(msg.id, MsgNode())
+        node = msg_nodes[msg.id]
 
-        async with node.lock:
-            if node.text is None:
-                cleaned = msg.content.removeprefix(discord_bot.user.mention).lstrip()
-                good_attachments = [
-                    att for att in msg.attachments
-                    if att.content_type and any(att.content_type.startswith(t) for t in ("text", "image"))
-                ]
-                att_resps = await asyncio.gather(*[httpx_client.get(a.url) for a in good_attachments])
+        formatted_text = node.text[:max_text]
 
-                node.text = "\n".join(
-                    ([cleaned] if cleaned else [])
-                    + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in msg.embeds]
-                    + [c.content for c in msg.components if c.type == discord.ComponentType.text_display]
-                    + [r.text for a, r in zip(good_attachments, att_resps) if a.content_type.startswith("text")]
-                )
-                node.images = [
-                    dict(
-                        type="image_url",
-                        image_url=dict(url=f"data:{a.content_type};base64,{b64encode(r.content).decode()}")
-                    )
-                    for a, r in zip(good_attachments, att_resps) if a.content_type.startswith("image")
-                ]
-                node.role = "assistant" if msg.author == discord_bot.user else "user"
-                node.user_id = msg.author.id if node.role == "user" else None
-                node.user_name = msg.author.display_name if node.role == "user" else None
-                node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
+        # Apply user ID prefix if enabled and native usernames aren't supported
+        if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_display_name is not None:
+            formatted_text = f"{node.user_display_name}(ID:{node.user_id}): {formatted_text}"
+            # node.text = formatted_text
 
-            formatted_text = node.text[:max_text]
+        # --- Token Counting ---
+        # 1. Calculate Text Tokens
+        text_tokens = len(TOKENIZER.encode(formatted_text))
+        
+        # 2. Calculate Image Tokens
+        # A safe "buffer" average is 1100 tokens per image.
+        image_tokens = 0
+        if node.images:
+            image_tokens = len(node.images) * 1100
+        
+        msg_tokens = text_tokens + image_tokens
 
-            # Apply user ID prefix if enabled and native usernames aren't supported
-            if prefix_with_user_id and not accept_usernames and node.role == "user" and node.user_name is not None:
-                formatted_text = f"{node.user_name}(ID:{node.user_id}): {formatted_text}"
-                node.text = formatted_text
-
-            # --- Token Counting ---
-            # 1. Calculate Text Tokens
-            text_tokens = len(TOKENIZER.encode(formatted_text))
-            
-            # 2. Calculate Image Tokens
-            # A safe "buffer" average is 1000 tokens per image.
-            image_tokens = 0
-            if node.images:
-                image_tokens = len(node.images) * 1000
-            
-            msg_tokens = text_tokens + image_tokens
-
-            # 3. Check if adding this message exceeds the limit
-            if total_tokens + msg_tokens > max_input_tokens:
-                if len(messages) == 0:
-                    pass
-                else:
-                    break
-            
-            total_tokens += msg_tokens
-
-            # Construct content payload
-            if node.images[:max_images]:
-                content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
+        # 3. Check if adding this message exceeds the limit
+        if total_tokens + msg_tokens > max_input_tokens:
+            if len(messages) == 0:
+                pass
             else:
-                content = formatted_text
+                break
+        
+        total_tokens += msg_tokens
 
-            if content:
-                payload = dict(content=content, role=node.role)
-                if accept_usernames and node.user_id and node.user_name:
-                    sanitized_name = USER_NAME_SANITIZER.sub('', node.user_name)[:64]
-                    payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
-                elif accept_usernames and node.user_id:
-                    payload["name"] = str(node.user_id)
-                messages.append(payload)
+        # Construct content payload
+        if node.images[:max_images]:
+            content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
+        else:
+            content = formatted_text
 
-            # Warnings
-            if len(node.text) > max_text:
-                user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
-            if total_tokens > max_input_tokens:
-                user_warnings.add("⚠️ Context limit reached (older messages trimmed)")
-            if len(node.images) > max_images:
-                user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
-            if node.has_bad_attachments:
-                user_warnings.add("⚠️ Unsupported attachments")
-            if not use_channel_context and (node.fetch_parent_failed or (node.parent_msg and len(messages) == max_messages)):
-                user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
+        if content:
+            payload = dict(content=content, role=node.role)
+            if accept_usernames and node.user_id and node.user_display_name:
+                sanitized_name = USER_NAME_SANITIZER.sub('', node.user_display_name)[:64]
+                payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
+            elif accept_usernames and node.user_id:
+                payload["name"] = str(node.user_id)
+            messages.append(payload)
 
-    logging.info(f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}")
+        # Warnings
+        if len(node.text) > max_text:
+            user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
+        if total_tokens > max_input_tokens:
+            user_warnings.add("⚠️ Context limit reached (older messages trimmed)")
+        if len(node.images) > max_images:
+            user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
+        if node.has_bad_attachments:
+            user_warnings.add("⚠️ Unsupported attachments")
+        if not use_channel_context and (node.fetch_parent_failed or (node.parent_msg and len(messages) == max_messages)):
+            user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
+
+    logging.debug(f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}")
 
     # --- Placeholders ---
     now = datetime.now().astimezone()
@@ -431,6 +519,9 @@ async def on_message(new_msg: discord.Message) -> None:
 
     openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
 
+    # Log the request
+    request_logger.log(openai_kwargs)
+
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
     else:
@@ -446,13 +537,13 @@ async def on_message(new_msg: discord.Message) -> None:
         await msg_nodes[response_msg.id].lock.acquire()
 
     try:
-        logging.info(f"Sending request to {provider} ({model})...")
+        logging.debug(f"Sending request ({total_tokens} tokens) to {provider} ({model})...")
         async with new_msg.channel.typing():
             first_chunk_received = False
 
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                 if not first_chunk_received:
-                    logging.info("First chunk received from LLM")
+                    logging.debug("First chunk received from LLM")
                     first_chunk_received = True
 
                 if finish_reason != None:
@@ -509,13 +600,13 @@ async def on_message(new_msg: discord.Message) -> None:
 
                         last_task_time = datetime.now().timestamp()
 
-            logging.info(f"Stream finished. Reason: {finish_reason}")
+            logging.debug(f"Stream finished. Reason: {finish_reason}")
 
             # --- Post-Processing: Strip <think> blocks ---
             full_response = "".join(response_contents)
 
             if "<think>" in full_response:
-                logging.info("Removing <think> block from response")
+                logging.debug("Removing <think> block from response")
                 full_response = THINK_BLOCK_REGEX.sub('', full_response).strip()
 
                 if full_response:
@@ -527,8 +618,6 @@ async def on_message(new_msg: discord.Message) -> None:
                 for content in response_contents:
                     await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
 
-            logging.info("Response ready")
-
     except Exception:
         logging.exception("Error while generating response")
         await new_msg.channel.send("⚠️ An error occurred.")
@@ -536,6 +625,9 @@ async def on_message(new_msg: discord.Message) -> None:
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)
         msg_nodes[response_msg.id].lock.release()
+
+    elapsed_time = time.perf_counter() - start_time
+    logging.info(f"Response sent in {elapsed_time:.4f} seconds")
 
     # Prune old MsgNodes
     if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
