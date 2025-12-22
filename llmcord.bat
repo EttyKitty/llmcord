@@ -1,5 +1,6 @@
-REM https://github.com/coffin399/llmcord-JP-plana/blob/advanced-bot-utilities/startPLANA.bat
 @echo off
+REM https://github.com/coffin399/llmcord-JP-plana/blob/advanced-bot-utilities/startPLANA.bat
+
 chcp 65001 >nul
 title llmcord
 
@@ -52,12 +53,22 @@ if %errorlevel% neq 0 (
 echo [SUCCESS] All packages installed successfully.
 echo.
 
-REM Start the bot
+REM Start the bot loop
+:start_bot
 echo ================================
 echo llmcord is starting...
 echo ================================
 echo.
+
 python llmcord.py
+
+REM Check exit code for reload (2)
+if %errorlevel% equ 2 (
+    echo.
+    echo [INFO] Reloading bot...
+    echo.
+    goto start_bot
+)
 
 REM Stop
 echo.

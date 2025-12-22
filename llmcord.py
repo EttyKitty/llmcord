@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import threading
 import time
 from base64 import b64encode
 from dataclasses import dataclass, field
@@ -903,8 +905,29 @@ async def on_message(new_msg: discord.Message) -> None:
                 msg_nodes.pop(msg_id, None)
 
 
+def console_listener():
+    """Listens for console commands in a background thread."""
+    while True:
+        try:
+            command = input()
+            if command.strip().lower() == "reload":
+                logging.info("Reloading...")
+                # Exit with code 2 to signal the batch script to restart
+                os._exit(2)
+            elif command.strip().lower() in ("exit", "stop", "quit"):
+                logging.info("Stopping...")
+                os._exit(0)
+            else:
+                print(f"Unknown command: {command}")
+        except EOFError:
+            break
+
+
+threading.Thread(target=console_listener, daemon=True).start()
+
+
 async def main() -> None:
-    await discord_bot.start(config["bot_token"])
+    await discord_bot.start(config_manager.config["bot_token"])
 
 
 try:
