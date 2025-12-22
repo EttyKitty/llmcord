@@ -19,6 +19,10 @@ from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
+# --- Fix for Windows Colors ---
+if os.name == "nt":
+    os.system("")  # This simple hack enables ANSI support in Windows CMD
+
 
 def _str_presenter(dumper, data):
     """
@@ -94,13 +98,45 @@ class RequestLogger:
 # Initialize the RequestLogger
 request_logger = RequestLogger()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
+# --- Logging Setup ---
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter to add colors to logs based on severity."""
+
+    # ANSI Escape Codes
+    grey = "\x1b[38;20m"
+    green = "\x1b[32;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+
+    # Your specific log format
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    FORMATS = {
+        logging.DEBUG: grey + fmt + reset,
+        logging.INFO: green + fmt + reset,
+        logging.WARNING: yellow + fmt + reset,
+        logging.ERROR: red + fmt + reset,
+        logging.CRITICAL: bold_red + fmt + reset,
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
+        return formatter.format(record)
+
+
+# Create a handler with the colored formatter
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(ColoredFormatter())
+
+# Configure root logger
+logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
+
+# Silence noisy libraries
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
