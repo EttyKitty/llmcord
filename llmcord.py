@@ -20,6 +20,24 @@ from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
 
+def _str_presenter(dumper, data):
+    """
+    Preserve multiline strings when dumping yaml.
+    https://github.com/yaml/pyyaml/issues/240
+    """
+    if "\n" in data:
+        # Remove trailing spaces messing out the output.
+        block = "\n".join([line.rstrip() for line in data.splitlines()])
+        if data.endswith("\n"):
+            block += "\n"
+        return dumper.represent_scalar("tag:yaml.org,2002:str", block, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+yaml.add_representer(str, _str_presenter)
+yaml.representer.SafeRepresenter.add_representer(str, _str_presenter)
+
+
 # --- New Request Logger Class ---
 class RequestLogger:
     """
@@ -115,6 +133,20 @@ TYPOGRAPHY_MAP = str.maketrans(
     }
 )
 
+EDITABLE_SETTINGS = (
+    "max_text",
+    "max_images",
+    "max_messages",
+    "max_input_tokens",
+    "use_plain_responses",
+    "allow_dms",
+    "use_channel_context",
+    "force_reply_chains",
+    "prefix_users",
+    "sanitize_response",
+)
+
+
 # TODO: Would be cool to add support for external regex loading, instead of hardcoded, like in SillyTavern
 def clean_response(text: str) -> str:
     text = text.translate(TYPOGRAPHY_MAP)
@@ -123,6 +155,7 @@ def clean_response(text: str) -> str:
     text = REGEX_TRAILING_WHITESPACE.sub("", text)
 
     return text.strip()
+
 
 VISION_MODEL_TAGS = (
     "claude",
@@ -150,14 +183,73 @@ EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 
 
-def get_config(filename: str = "config.yaml") -> dict[str, Any]:
-    with open(filename, encoding="utf-8") as file:
-        return yaml.safe_load(file)
+# --- Config Manager ---
+class ConfigManager:
+    def __init__(self):
+        self.config = {}
+        self.load_config()
+
+    def deep_merge(self, base: dict, overrides: dict) -> None:
+        for key, value in overrides.items():
+            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+                self.deep_merge(base[key], value)
+            else:
+                base[key] = value
+
+    def load_config(self) -> None:
+        # 1. Load Defaults
+        try:
+            with open("config.yaml", encoding="utf-8") as f:
+                self.config = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            logging.error("config.yaml not found! Exiting...")
+            exit(1)
+
+        # 2. Load User Overrides
+        if os.path.exists("user_config.yaml"):
+            try:
+                with open("user_config.yaml", encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                self.deep_merge(self.config, user_config)
+            except Exception as e:
+                logging.error(f"Error loading user_config.yaml: {e}")
+
+        # 3. Ensure Runtime Keys
+        self.config.setdefault("channel_models", {})
+        if "default_model" not in self.config and self.config.get("models"):
+            self.config["default_model"] = next(iter(self.config["models"]))
+
+    def update_user_config(self, updates: dict) -> None:
+        """Reads user_config, applies updates, saves, and reloads in-memory config."""
+        current_user_config = {}
+        if os.path.exists("user_config.yaml"):
+            try:
+                with open("user_config.yaml", encoding="utf-8") as f:
+                    current_user_config = yaml.safe_load(f) or {}
+            except Exception as e:
+                logging.error(f"Failed to read user_config.yaml for update: {e}")
+
+        self.deep_merge(current_user_config, updates)
+
+        try:
+            with open("user_config.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(current_user_config, f, indent=2, sort_keys=False)
+            self.load_config()  # Refresh in-memory state
+        except Exception as e:
+            logging.error(f"Failed to write to user_config.yaml: {e}")
+
+    def set_default_model(self, model: str) -> None:
+        self.update_user_config({"default_model": model})
+
+    def set_channel_model(self, channel_id: int, model: str) -> None:
+        # We need to be careful not to overwrite the whole channel_models dict
+        # So we fetch the current structure first in update_user_config logic,
+        # but deep_merge handles the nested update.
+        self.update_user_config({"channel_models": {channel_id: model}})
 
 
-config = get_config()
-default_model = next(iter(config["models"]))
-channel_models = {}
+config_manager = ConfigManager()
+
 openai_clients = {}
 
 msg_nodes = {}
@@ -166,7 +258,9 @@ last_task_time = 0
 intents = discord.Intents.default()
 intents.message_content = True
 activity = discord.CustomActivity(
-    name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128]
+    name=(
+        config_manager.config.get("status_message") or "github.com/jakobdylanc/llmcord"
+    )[:128]
 )
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
@@ -267,29 +361,37 @@ def is_message_allowed(msg: discord.Message, config: dict) -> bool:
     return True
 
 
-@discord_bot.tree.command(
-    name="model", description="Switch the default default model (affects all channels)"
+# --- Config Commands ---
+config_group = discord.app_commands.Group(
+    name="config", description="Bot configuration commands"
 )
-async def model_command(interaction: discord.Interaction, model: str) -> None:
-    global default_model
 
+
+@config_group.command(
+    name="model", description="Switch the default model (affects all channels)"
+)
+async def config_model(interaction: discord.Interaction, model: str) -> None:
     # Permission Check
-    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+    if (
+        interaction.user.id
+        not in config_manager.config["permissions"]["users"]["admin_ids"]
+    ):
         await interaction.response.send_message(
-            "You don't have permission to change the default model.", ephemeral=True
+            "[You don't have permission to change the default model.]", ephemeral=True
         )
         logging.info(
-            f"User {interaction.user.name} tried to switch default model but was denied."
+            f"User {interaction.user.name} tried to switch default model but was denied"
         )
         return
 
-    if model == default_model:
+    current_default = config_manager.config["default_model"]
+    if model == current_default:
         await interaction.response.send_message(
-            f"Default model is already: `{default_model}`", ephemeral=True
+            f"[`default_model` is already: `{current_default}`.]", ephemeral=True
         )
         return
 
-    default_model = model
+    config_manager.set_default_model(model)
 
     # Logging with Channel Name
     channel_name = getattr(interaction.channel, "name", "DM")
@@ -297,13 +399,17 @@ async def model_command(interaction: discord.Interaction, model: str) -> None:
         f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})"
     )
 
-    await interaction.response.send_message(f"**Default model** switched to: `{model}`")
+    await interaction.response.send_message(
+        f"[`default_model` switched to: `{model}`.]"
+    )
 
 
-@model_command.autocomplete("model")
-async def model_autocomplete(
+@config_model.autocomplete("model")
+async def config_model_autocomplete(
     interaction: discord.Interaction, curr_str: str
 ) -> list[Choice[str]]:
+    default_model = config_manager.config["default_model"]
+
     # Highlights the current GLOBAL model
     choices = (
         [Choice(name=f"◉ {default_model} (current default)", value=default_model)]
@@ -312,47 +418,61 @@ async def model_autocomplete(
     )
     choices += [
         Choice(name=f"○ {model}", value=model)
-        for model in config["models"]
+        for model in config_manager.config["models"]
         if model != default_model and curr_str.lower() in model.lower()
     ]
     return choices[:25]
 
 
-@discord_bot.tree.command(
-    name="channelmodel", description="Switch the model for THIS channel only"
+@config_group.command(
+    name="channelmodel", description="Switch the model for a specific channel"
 )
-async def channel_model_command(interaction: discord.Interaction, model: str) -> None:
+async def config_channel_model(
+    interaction: discord.Interaction,
+    model: str,
+    channel: Optional[discord.abc.GuildChannel] = None,
+) -> None:
     # Permission Check
-    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+    if (
+        interaction.user.id
+        not in config_manager.config["permissions"]["users"]["admin_ids"]
+    ):
         await interaction.response.send_message(
-            "You don't have permission to change the channel model.", ephemeral=True
+            "[You don't have permission to change the channel model.]", ephemeral=True
         )
         logging.info(
             f"User {interaction.user.name} tried to switch CHANNEL model but was denied."
         )
         return
 
+    target_channel = channel or interaction.channel
+
     # Update the override
-    channel_models[interaction.channel_id] = model
+    config_manager.set_channel_model(target_channel.id, model)
 
     # Logging with Channel Name
-    channel_name = getattr(interaction.channel, "name", "DM")
+    channel_name = getattr(target_channel, "name", "DM")
     logging.info(
-        f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name}"
+        f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})"
     )
 
-    await interaction.response.send_message(f"**Channel model** set to: `{model}`")
+    await interaction.response.send_message(
+        f"[`channel_model` for {target_channel.mention} set to: `{model}`.]]"
+    )
 
 
-@channel_model_command.autocomplete("model")
-async def channel_model_autocomplete(
+@config_channel_model.autocomplete("model")
+async def config_channel_model_autocomplete(
     interaction: discord.Interaction, curr_str: str
 ) -> list[Choice[str]]:
     # Determine what is currently active in this channel (Override OR Default)
+    default_model = config_manager.config["default_model"]
+    channel_models = config_manager.config["channel_models"]
+
     current_active = channel_models.get(interaction.channel_id, default_model)
     is_overridden = interaction.channel_id in channel_models
 
-    status_text = "(current override)" if is_overridden else "(current default)"
+    status_text = "(current channel)" if is_overridden else "(current default)"
 
     choices = (
         [Choice(name=f"◉ {current_active} {status_text}", value=current_active)]
@@ -361,15 +481,145 @@ async def channel_model_autocomplete(
     )
     choices += [
         Choice(name=f"○ {model}", value=model)
-        for model in config["models"]
+        for model in config_manager.config["models"]
         if model != current_active and curr_str.lower() in model.lower()
     ]
     return choices[:25]
 
 
+@config_group.command(name="set", description="Edit a specific configuration setting")
+async def config_set(interaction: discord.Interaction, key: str, value: str) -> None:
+    # Permission Check
+    if (
+        interaction.user.id
+        not in config_manager.config["permissions"]["users"]["admin_ids"]
+    ):
+        await interaction.response.send_message(
+            "[You don't have permission to edit configuration.]", ephemeral=True
+        )
+        return
+
+    if key not in EDITABLE_SETTINGS:
+        await interaction.response.send_message(
+            f"[Invalid setting: `{key}`. Please select one from the list.]",
+            ephemeral=True,
+        )
+        return
+
+    # Infer type from current config
+    current_value = config_manager.config.get(key)
+
+    if current_value is None:
+        await interaction.response.send_message(
+            f"[Setting `{key}` is not present in the current configuration, so its type cannot be inferred.]",
+            ephemeral=True,
+        )
+        return
+
+    target_type = type(current_value)
+    parsed_value = None
+
+    try:
+        if target_type is bool:
+            if value.lower() in ("true", "1", "yes", "on"):
+                parsed_value = True
+            elif value.lower() in ("false", "0", "no", "off"):
+                parsed_value = False
+            else:
+                raise ValueError("Invalid boolean")
+        elif target_type is int:
+            parsed_value = int(value)
+        elif target_type is float:
+            parsed_value = float(value)
+        else:
+            # Default to string for everything else
+            parsed_value = value
+
+    except ValueError:
+        await interaction.response.send_message(
+            f"[Invalid value for `{key}`. Expected type: `{target_type.__name__}`.]",
+            ephemeral=True,
+        )
+        return
+
+    # Apply update
+    config_manager.update_user_config({key: parsed_value})
+
+    logging.info(
+        f"Admin {interaction.user.name} changed config {key} to {parsed_value}"
+    )
+    await interaction.response.send_message(
+        f"[Configuration updated: `{key}` set to `{parsed_value}`.]"
+    )
+
+
+@config_set.autocomplete("key")
+async def config_set_key_autocomplete(
+    interaction: discord.Interaction, curr_str: str
+) -> list[Choice[str]]:
+    return [
+        Choice(name=key, value=key)
+        for key in EDITABLE_SETTINGS
+        if curr_str.lower() in key.lower()
+    ][:25]
+
+
+@config_set.autocomplete("value")
+async def config_set_value_autocomplete(
+    interaction: discord.Interaction, curr_str: str
+) -> list[Choice[str]]:
+    # Retrieve the 'key' argument the user has currently selected/typed
+    selected_key = interaction.namespace.key
+
+    # If no key is selected or it's not a valid setting, offer no suggestions
+    if not selected_key or selected_key not in EDITABLE_SETTINGS:
+        return []
+
+    # Get the current value to determine the type
+    current_val = config_manager.config.get(selected_key)
+
+    # If the setting is a boolean, suggest True/False
+    if isinstance(current_val, bool):
+        options = ["True", "False"]
+        return [
+            Choice(name=opt, value=opt)
+            for opt in options
+            if curr_str.lower() in opt.lower()
+        ]
+
+    # If the setting is numeric, suggest the current value to clear client cache
+    if isinstance(current_val, (int, float)):
+        return [Choice(name=f"Current: {current_val}", value=str(current_val))]
+
+    return []
+
+
+@config_group.command(
+    name="reload", description="Reload config.yaml and user_config.yaml"
+)
+async def config_reload(interaction: discord.Interaction) -> None:
+    # Permission Check
+    if (
+        interaction.user.id
+        not in config_manager.config["permissions"]["users"]["admin_ids"]
+    ):
+        await interaction.response.send_message(
+            "[You don't have permission to reload the config.]", ephemeral=True
+        )
+        return
+
+    config_manager.load_config()
+
+    logging.info(f"Admin {interaction.user.name} reloaded the configuration")
+    await interaction.response.send_message("[Configuration reloaded from disk.]")
+
+
+discord_bot.tree.add_command(config_group)
+
+
 @discord_bot.event
 async def on_ready() -> None:
-    if client_id := config.get("client_id"):
+    if client_id := config_manager.config.get("client_id"):
         logging.info(
             f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot"
         )
@@ -391,7 +641,7 @@ async def on_message(new_msg: discord.Message) -> None:
     )
     start_time = time.perf_counter()
 
-    config = await asyncio.to_thread(get_config)
+    config = config_manager.config
 
     if not is_message_allowed(new_msg, config):
         logging.info(
@@ -400,6 +650,9 @@ async def on_message(new_msg: discord.Message) -> None:
         return
 
     # --- Provider Setup ---
+    default_model = config["default_model"]
+    channel_models = config["channel_models"]
+
     provider_slash_model = channel_models.get(new_msg.channel.id, default_model)
     try:
         provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
@@ -654,9 +907,9 @@ async def on_message(new_msg: discord.Message) -> None:
         if content:
             payload = dict(content=content, role=node.role)
             if accept_usernames and node.user_id and node.user_display_name:
-                sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name)[
-                    :64
-                ]
+                sanitized_name = REGEX_USER_NAME_SANITIZER.sub(
+                    "", node.user_display_name
+                )[:64]
                 payload["name"] = (
                     sanitized_name if sanitized_name else str(node.user_id)
                 )
