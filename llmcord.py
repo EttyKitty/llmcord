@@ -599,37 +599,6 @@ async def config_set_key_autocomplete(
         if curr_str.lower() in key.lower()
     ][:25]
 
-
-@config_set.autocomplete("value")
-async def config_set_value_autocomplete(
-    interaction: discord.Interaction, curr_str: str
-) -> list[Choice[str]]:
-    # Retrieve the 'key' argument the user has currently selected/typed
-    selected_key = interaction.namespace.key
-
-    # If no key is selected or it's not a valid setting, offer no suggestions
-    if not selected_key or selected_key not in EDITABLE_SETTINGS:
-        return []
-
-    # Get the current value to determine the type
-    current_val = config_manager.config.get(selected_key)
-
-    # If the setting is a boolean, suggest True/False
-    if isinstance(current_val, bool):
-        options = ["True", "False"]
-        return [
-            Choice(name=opt, value=opt)
-            for opt in options
-            if curr_str.lower() in opt.lower()
-        ]
-
-    # If the setting is numeric, suggest the current value to clear client cache
-    if isinstance(current_val, (int, float)):
-        return [Choice(name=f"Current: {current_val}", value=str(current_val))]
-
-    return []
-
-
 @config_group.command(
     name="reload", description="Reload config.yaml and user_config.yaml"
 )
