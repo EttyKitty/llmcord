@@ -84,11 +84,13 @@ git clone https://github.com/jakobdylanc/llmcord
 
 **3.** Run the bot.
 
-⭐Using the Starter (Recommended for Windows):
+⭐**Using the Starter (Recommended for Windows):**
+```
 Simply launch `starter.bat`. It will:
 1. Create a secure virtual environment.
 2. Install/Update all dependencies automatically.
 3. Launch the bot (and auto-restart it if you reload configs).
+```
 
 **Using Docker:**
 ```bash
