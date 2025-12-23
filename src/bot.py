@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import threading
 import time
 from base64 import b64encode
@@ -9,28 +10,45 @@ from typing import Optional
 
 import discord
 import httpx
+import tiktoken
 from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
-# --- Imports from new modules ---
 from .config import EDITABLE_SETTINGS, config_manager
 from .logger import request_logger
-from .utils import (
-    EDIT_DELAY_SECONDS,
-    EMBED_COLOR_COMPLETE,
-    EMBED_COLOR_INCOMPLETE,
-    MAX_MESSAGE_NODES,
-    PROVIDERS_SUPPORTING_USERNAMES,
-    REGEX_THINK_BLOCK,
-    REGEX_USER_NAME_SANITIZER,
-    STREAMING_INDICATOR,
-    TOKENIZER,
-    VISION_MODEL_TAGS,
-    MsgNode,
-    clean_response,
+from .utils import MsgNode, clean_response
+
+REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
+REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+
+VISION_MODEL_TAGS = (
+    "claude",
+    "gemini",
+    "gemma",
+    "gpt-4",
+    "gpt-5",
+    "grok-4",
+    "llama",
+    "llava",
+    "mistral",
+    "o3",
+    "o4",
+    "vision",
+    "vl",
 )
+PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
+
+EMBED_COLOR_COMPLETE = discord.Color.dark_green()
+EMBED_COLOR_INCOMPLETE = discord.Color.orange()
+
+STREAMING_INDICATOR = " ⚪"
+EDIT_DELAY_SECONDS = 1
+MAX_MESSAGE_NODES = 500
+
+TOKENIZER = tiktoken.get_encoding("cl100k_base")
+
 
 openai_clients = {}
 msg_nodes = {}

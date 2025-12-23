@@ -4,34 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 import discord
-import tiktoken
 
-VISION_MODEL_TAGS = (
-    "claude",
-    "gemini",
-    "gemma",
-    "gpt-4",
-    "gpt-5",
-    "grok-4",
-    "llama",
-    "llava",
-    "mistral",
-    "o3",
-    "o4",
-    "vision",
-    "vl",
-)
-PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-
-EMBED_COLOR_COMPLETE = discord.Color.dark_green()
-EMBED_COLOR_INCOMPLETE = discord.Color.orange()
-
-STREAMING_INDICATOR = " ⚪"
-EDIT_DELAY_SECONDS = 1
-MAX_MESSAGE_NODES = 500
-
-REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
-REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
 REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
@@ -46,8 +19,6 @@ TYPOGRAPHY_MAP = str.maketrans(
         "…": "...",
     }
 )
-
-TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 
 @dataclass
