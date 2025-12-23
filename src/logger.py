@@ -42,16 +42,11 @@ class RequestLogger:
             if "extra_headers" in log_entry and log_entry["extra_headers"]:
                 headers = log_entry["extra_headers"].copy()
                 for key in headers:
-                    if any(
-                        sensitive in key.lower()
-                        for sensitive in ("api", "auth", "key", "token")
-                    ):
+                    if any(sensitive in key.lower() for sensitive in ("api", "auth", "key", "token")):
                         headers[key] = "REDACTED"
                 log_entry["extra_headers"] = headers
 
-            log_message = json.dumps(
-                log_entry, default=str, ensure_ascii=False, indent=4
-            )
+            log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
 
             self.logger.info(log_message)
         except Exception as e:

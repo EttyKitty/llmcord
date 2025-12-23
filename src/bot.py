@@ -55,9 +55,7 @@ last_task_time = 0
 
 intents = discord.Intents.default()
 intents.message_content = True
-activity = discord.CustomActivity(
-    name=(config_manager.config.discord.status_message)[:128]
-)
+activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix="?")
 
 httpx_client = httpx.AsyncClient()
@@ -90,21 +88,11 @@ def is_message_allowed(msg: discord.Message, config: RootConfig) -> bool:
     allowed_roles = permissions.roles.allowed_ids
     blocked_roles = permissions.roles.blocked_ids
 
-    allow_all_users = (
-        not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-    )
+    allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
 
-    is_good_user = (
-        allow_all_users
-        or msg.author.id in allowed_users
-        or any(id in allowed_roles for id in role_ids)
-    )
+    is_good_user = allow_all_users or msg.author.id in allowed_users or any(id in allowed_roles for id in role_ids)
 
-    is_bad_user = (
-        not is_good_user
-        or msg.author.id in blocked_users
-        or any(id in blocked_roles for id in role_ids)
-    )
+    is_bad_user = not is_good_user or msg.author.id in blocked_users or any(id in blocked_roles for id in role_ids)
 
     if is_bad_user:
         return False
@@ -126,14 +114,8 @@ def is_message_allowed(msg: discord.Message, config: RootConfig) -> bool:
     allow_dms = config.discord.allow_dms
 
     allow_all_channels = not allowed_channels
-    is_good_channel = (
-        allow_dms
-        if is_dm
-        else (allow_all_channels or any(id in allowed_channels for id in channel_ids))
-    )
-    is_bad_channel = not is_good_channel or any(
-        id in blocked_channels for id in channel_ids
-    )
+    is_good_channel = allow_dms if is_dm else (allow_all_channels or any(id in allowed_channels for id in channel_ids))
+    is_bad_channel = not is_good_channel or any(id in blocked_channels for id in channel_ids)
 
     if is_bad_channel:
         return False
@@ -142,87 +124,51 @@ def is_message_allowed(msg: discord.Message, config: RootConfig) -> bool:
 
 
 # --- Config Commands ---
-config_group = discord.app_commands.Group(
-    name="config", description="Bot configuration commands"
-)
+config_group = discord.app_commands.Group(name="config", description="Bot configuration commands")
 
 
-@config_group.command(
-    name="model", description="Switch the default model (affects all channels)"
-)
+@config_group.command(name="model", description="Switch the default model (affects all channels)")
 async def config_model(interaction: discord.Interaction, model: str) -> None:
     # Permission Check
-    if (
-        interaction.user.id
-        not in config_manager.config.discord.permissions.users.admin_ids
-    ):
-        await interaction.response.send_message(
-            "[You don't have permission to change the default model.]", ephemeral=True
-        )
-        logging.info(
-            f"User {interaction.user.name} tried to switch default model but was denied"
-        )
+    if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
+        await interaction.response.send_message("[You don't have permission to change the default model.]", ephemeral=True)
+        logging.info(f"User {interaction.user.name} tried to switch default model but was denied")
         return
 
     current_default = config_manager.config.discord.default_model
     if model == current_default:
-        await interaction.response.send_message(
-            f"[`default_model` is already: `{current_default}`.]", ephemeral=True
-        )
+        await interaction.response.send_message(f"[`default_model` is already: `{current_default}`.]", ephemeral=True)
         return
 
     config_manager.set_default_model(model)
 
     # Logging with Channel Name
     channel_name = getattr(interaction.channel, "name", "DM")
-    logging.info(
-        f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})"
-    )
+    logging.info(f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})")
 
-    await interaction.response.send_message(
-        f"[`default_model` switched to: `{model}`.]"
-    )
+    await interaction.response.send_message(f"[`default_model` switched to: `{model}`.]")
 
 
 @config_model.autocomplete("model")
-async def config_model_autocomplete(
-    interaction: discord.Interaction, curr_str: str
-) -> list[Choice[str]]:
+async def config_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     default_model = config_manager.config.discord.default_model
 
     # Highlights the current GLOBAL model
-    choices = (
-        [Choice(name=f"◉ {default_model} (current default)", value=default_model)]
-        if curr_str.lower() in default_model.lower()
-        else []
-    )
-    choices += [
-        Choice(name=f"○ {model}", value=model)
-        for model in config_manager.config.llm.models
-        if model != default_model and curr_str.lower() in model.lower()
-    ]
+    choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if curr_str.lower() in default_model.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config_manager.config.llm.models if model != default_model and curr_str.lower() in model.lower()]
     return choices[:25]
 
 
-@config_group.command(
-    name="channelmodel", description="Switch the model for a specific channel"
-)
+@config_group.command(name="channelmodel", description="Switch the model for a specific channel")
 async def config_channel_model(
     interaction: discord.Interaction,
     model: str,
     channel: discord.abc.GuildChannel,
 ) -> None:
     # Permission Check
-    if (
-        interaction.user.id
-        not in config_manager.config.discord.permissions.users.admin_ids
-    ):
-        await interaction.response.send_message(
-            "[You don't have permission to change the channel model.]", ephemeral=True
-        )
-        logging.info(
-            f"User {interaction.user.name} tried to switch CHANNEL model but was denied."
-        )
+    if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
+        await interaction.response.send_message("[You don't have permission to change the channel model.]", ephemeral=True)
+        logging.info(f"User {interaction.user.name} tried to switch CHANNEL model but was denied.")
         return
 
     target_channel = channel or interaction.channel
@@ -232,19 +178,13 @@ async def config_channel_model(
 
     # Logging with Channel Name
     channel_name = getattr(target_channel, "name", "DM")
-    logging.info(
-        f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})"
-    )
+    logging.info(f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})")
 
-    await interaction.response.send_message(
-        f"[`channel_model` for {target_channel.mention} set to: `{model}`.]]"
-    )
+    await interaction.response.send_message(f"[`channel_model` for {target_channel.mention} set to: `{model}`.]]")
 
 
 @config_channel_model.autocomplete("model")
-async def config_channel_model_autocomplete(
-    interaction: discord.Interaction, curr_str: str
-) -> list[Choice[str]]:
+async def config_channel_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     # Determine what is currently active in this channel (Override OR Default)
     default_model = config_manager.config.discord.default_model
     channel_models = config_manager.config.discord.channel_models
@@ -254,28 +194,15 @@ async def config_channel_model_autocomplete(
 
     status_text = "(current channel)" if is_overridden else "(current default)"
 
-    choices = (
-        [Choice(name=f"◉ {current_active} {status_text}", value=current_active)]
-        if curr_str.lower() in current_active.lower()
-        else []
-    )
-    choices += [
-        Choice(name=f"○ {model}", value=model)
-        for model in config_manager.config.llm.models
-        if model != current_active and curr_str.lower() in model.lower()
-    ]
+    choices = [Choice(name=f"◉ {current_active} {status_text}", value=current_active)] if curr_str.lower() in current_active.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config_manager.config.llm.models if model != current_active and curr_str.lower() in model.lower()]
     return choices[:25]
 
 
 @config_group.command(name="set", description="Edit a specific configuration setting")
 async def config_set(interaction: discord.Interaction, key: str, value: str) -> None:
-    if (
-        interaction.user.id
-        not in config_manager.config.discord.permissions.users.admin_ids
-    ):
-        await interaction.response.send_message(
-            "[You don't have permission to edit configuration.]", ephemeral=True
-        )
+    if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
+        await interaction.response.send_message("[You don't have permission to edit configuration.]", ephemeral=True)
         return
 
     if key not in EDITABLE_SETTINGS:
@@ -332,45 +259,26 @@ async def config_set(interaction: discord.Interaction, key: str, value: str) -> 
     # Apply update
     config_manager.update_setting(key, parsed_value)
 
-    logging.info(
-        f"Admin {interaction.user.name} changed config {key} to {parsed_value}"
-    )
-    await interaction.response.send_message(
-        f"[Configuration updated: `{key}` set to `{parsed_value}`.]"
-    )
+    logging.info(f"Admin {interaction.user.name} changed config {key} to {parsed_value}")
+    await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
 
 
 @config_set.autocomplete("key")
-async def config_set_key_autocomplete(
-    interaction: discord.Interaction, curr_str: str
-) -> list[Choice[str]]:
-    return [
-        Choice(name=key, value=key)
-        for key in EDITABLE_SETTINGS
-        if curr_str.lower() in key.lower()
-    ][:25]
+async def config_set_key_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    return [Choice(name=key, value=key) for key in EDITABLE_SETTINGS if curr_str.lower() in key.lower()][:25]
 
 
-@config_group.command(
-    name="reload", description="Reload config-example.yaml and config.yaml"
-)
+@config_group.command(name="reload", description="Reload config-example.yaml and config.yaml")
 async def config_reload(interaction: discord.Interaction) -> None:
     # Permission Check
-    if (
-        interaction.user.id
-        not in config_manager.config.discord.permissions.users.admin_ids
-    ):
-        await interaction.response.send_message(
-            "[You don't have permission to reload the config.]", ephemeral=True
-        )
+    if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
+        await interaction.response.send_message("[You don't have permission to reload the config.]", ephemeral=True)
         return
 
     config_manager.load_config()
 
     logging.info(f"Admin {interaction.user.name} reloaded the configuration")
-    await interaction.response.send_message(
-        "[Configuration reloaded from disk.]", ephemeral=True
-    )
+    await interaction.response.send_message("[Configuration reloaded from disk.]", ephemeral=True)
 
 
 discord_bot.tree.add_command(config_group)
@@ -379,9 +287,7 @@ discord_bot.tree.add_command(config_group)
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config_manager.config.discord.client_id:
-        logging.info(
-            f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot"
-        )
+        logging.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
     logging.info(f"Bot ready. Logged in as {discord_bot.user}")
     await discord_bot.tree.sync()
 
@@ -398,17 +304,13 @@ async def on_message(new_msg: discord.Message) -> None:
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
 
-    logging.info(
-        f"Message received. User: {new_msg.author.name} ID: {new_msg.author.id}"
-    )
+    logging.info(f"Message received. User: {new_msg.author.name} ID: {new_msg.author.id}")
     start_time = time.perf_counter()
 
     config = config_manager.config
 
     if not is_message_allowed(new_msg, config):
-        logging.info(
-            f"Message blocked. User: {new_msg.author.name} ID: {new_msg.author.id} Channel: {new_msg.channel.id}"
-        )
+        logging.info(f"Message blocked. User: {new_msg.author.name} ID: {new_msg.author.id} Channel: {new_msg.channel.id}")
         return
 
     # --- Provider Setup ---
@@ -421,23 +323,16 @@ async def on_message(new_msg: discord.Message) -> None:
         provider_config = config.llm.providers[provider]
         openai_client = get_openai_client(provider_config)
     except Exception as e:
-        logging.error(
-            f"Failed to load provider configuration for {provider_slash_model}: {e}"
-        )
+        logging.error(f"Failed to load provider configuration for {provider_slash_model}: {e}")
         return
 
     model_parameters = config.llm.models.get(provider_slash_model, None)
     extra_headers = provider_config.get("extra_headers")
     extra_query = provider_config.get("extra_query")
-    extra_body = (provider_config.get("extra_body") or {}) | (
-        model_parameters or {}
-    ) or None
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-    accept_usernames = any(
-        provider_slash_model.lower().startswith(x)
-        for x in PROVIDERS_SUPPORTING_USERNAMES
-    )
+    accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
     # Limits
     max_text = config.chat.max_text
@@ -472,15 +367,11 @@ async def on_message(new_msg: discord.Message) -> None:
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
         use_channel_context = False
 
-    logging.debug(
-        f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}"
-    )
+    logging.debug(f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}")
 
     if use_channel_context:
         message_history.append(new_msg)
-        async for msg in new_msg.channel.history(
-            limit=max_messages - 1, before=new_msg
-        ):
+        async for msg in new_msg.channel.history(limit=max_messages - 1, before=new_msg):
             message_history.append(msg)
         message_history = message_history[:max_messages]
     else:
@@ -491,51 +382,19 @@ async def on_message(new_msg: discord.Message) -> None:
                 if (
                     curr.reference is None
                     and discord_bot.user.mention not in curr.content
-                    and (
-                        prev := (
-                            [
-                                m
-                                async for m in curr.channel.history(
-                                    before=curr, limit=1
-                                )
-                            ]
-                            or [None]
-                        )[0]
-                    )
-                    and prev.type
-                    in (discord.MessageType.default, discord.MessageType.reply)
-                    and prev.author
-                    == (
-                        discord_bot.user
-                        if curr.channel.type == discord.ChannelType.private
-                        else curr.author
-                    )
+                    and (prev := ([m async for m in curr.channel.history(before=curr, limit=1)] or [None])[0])
+                    and prev.type in (discord.MessageType.default, discord.MessageType.reply)
+                    and prev.author == (discord_bot.user if curr.channel.type == discord.ChannelType.private else curr.author)
                 ):
                     curr = prev
                 else:
                     is_thread = curr.channel.type == discord.ChannelType.public_thread
                     parent = getattr(curr.channel, "parent", None)
-                    thread_start = (
-                        is_thread
-                        and curr.reference is None
-                        and parent
-                        and parent.type == discord.ChannelType.text
-                    )
-                    parent_id = (
-                        curr.channel.id
-                        if thread_start
-                        else getattr(curr.reference, "message_id", None)
-                    )
+                    thread_start = is_thread and curr.reference is None and parent and parent.type == discord.ChannelType.text
+                    parent_id = curr.channel.id if thread_start else getattr(curr.reference, "message_id", None)
                     if parent_id:
-                        if (
-                            thread_start
-                            and isinstance(curr.channel, discord.Thread)
-                            and isinstance(curr.channel.parent, discord.TextChannel)
-                        ):
-                            curr = (
-                                curr.channel.starter_message
-                                or await curr.channel.parent.fetch_message(parent_id)
-                            )
+                        if thread_start and isinstance(curr.channel, discord.Thread) and isinstance(curr.channel.parent, discord.TextChannel):
+                            curr = curr.channel.starter_message or await curr.channel.parent.fetch_message(parent_id)
                     else:
                         curr = None
             except (discord.NotFound, discord.HTTPException):
@@ -555,63 +414,33 @@ async def on_message(new_msg: discord.Message) -> None:
                     cleaned = msg.content.lstrip()
 
                     # 2. Handle Attachments
-                    good_attachments = [
-                        att
-                        for att in msg.attachments
-                        if att.content_type
-                        and any(
-                            att.content_type.startswith(t) for t in ("text", "image")
-                        )
-                    ]
+                    good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(t) for t in ("text", "image"))]
                     # Download all attachments for this message in parallel
-                    att_resps = await asyncio.gather(
-                        *[httpx_client.get(a.url) for a in good_attachments]
-                    )
+                    att_resps = await asyncio.gather(*[httpx_client.get(a.url) for a in good_attachments])
 
                     # 3. Construct Node Text
                     node.text = "\n".join(
                         ([cleaned] if cleaned else [])
-                        + [
-                            "\n".join(
-                                filter(None, (e.title, e.description, e.footer.text))
-                            )
-                            for e in msg.embeds
-                        ]
-                        + [
-                            getattr(c, "content", "")
-                            for c in msg.components
-                            if c.type == discord.ComponentType.text_display
-                        ]
-                        + [
-                            r.text
-                            for a, r in zip(good_attachments, att_resps)
-                            if a.content_type and a.content_type.startswith("text")
-                        ]
+                        + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in msg.embeds]
+                        + [getattr(c, "content", "") for c in msg.components if c.type == discord.ComponentType.text_display]
+                        + [r.text for a, r in zip(good_attachments, att_resps) if a.content_type and a.content_type.startswith("text")]
                     )
 
                     # 4. Construct Node Images
                     node.images = [
                         dict(
                             type="image_url",
-                            image_url=dict(
-                                url=f"data:{a.content_type};base64,{b64encode(r.content).decode()}"
-                            ),
+                            image_url=dict(url=f"data:{a.content_type};base64,{b64encode(r.content).decode()}"),
                         )
                         for a, r in zip(good_attachments, att_resps)
                         if a.content_type and a.content_type.startswith("image")
                     ]
 
                     # 5. Metadata
-                    node.role = (
-                        "assistant" if msg.author == discord_bot.user else "user"
-                    )
+                    node.role = "assistant" if msg.author == discord_bot.user else "user"
                     node.user_id = msg.author.id if node.role == "user" else None
-                    node.user_display_name = (
-                        msg.author.display_name if node.role == "user" else None
-                    )
-                    node.has_bad_attachments = len(msg.attachments) > len(
-                        good_attachments
-                    )
+                    node.user_display_name = msg.author.display_name if node.role == "user" else None
+                    node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
 
     logging.debug("Initializing history")
 
@@ -630,15 +459,8 @@ async def on_message(new_msg: discord.Message) -> None:
         formatted_text = node.text[:max_text]
 
         # Apply user ID prefix if enabled and native usernames aren't supported
-        if (
-            prefix_users
-            and not accept_usernames
-            and node.role == "user"
-            and node.user_display_name is not None
-        ):
-            formatted_text = (
-                f"{node.user_display_name}({node.user_id}): {formatted_text}"
-            )
+        if prefix_users and not accept_usernames and node.role == "user" and node.user_display_name is not None:
+            formatted_text = f"{node.user_display_name}({node.user_id}): {formatted_text}"
 
         # --- Token Counting ---
         # 1. Calculate Text Tokens
@@ -663,21 +485,15 @@ async def on_message(new_msg: discord.Message) -> None:
 
         # Construct content payload
         if node.images[:max_images]:
-            content = (
-                [dict(type="text", text=formatted_text)] if formatted_text else []
-            ) + node.images[:max_images]
+            content = ([dict(type="text", text=formatted_text)] if formatted_text else []) + node.images[:max_images]
         else:
             content = formatted_text
 
         if content:
             payload = dict(content=content, role=node.role)
             if accept_usernames and node.user_id and node.user_display_name:
-                sanitized_name = REGEX_USER_NAME_SANITIZER.sub(
-                    "", node.user_display_name
-                )[:64]
-                payload["name"] = (
-                    sanitized_name if sanitized_name else str(node.user_id)
-                )
+                sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name)[:64]
+                payload["name"] = sanitized_name if sanitized_name else str(node.user_id)
             elif accept_usernames and node.user_id:
                 payload["name"] = str(node.user_id)
             messages.append(payload)
@@ -688,32 +504,18 @@ async def on_message(new_msg: discord.Message) -> None:
         if total_tokens > max_input_tokens:
             user_warnings.add("⚠️ Context limit reached (older messages trimmed)")
         if len(node.images) > max_images:
-            user_warnings.add(
-                f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message"
-                if max_images > 0
-                else "⚠️ Can't see images"
-            )
+            user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
         if node.has_bad_attachments:
             user_warnings.add("⚠️ Unsupported attachments")
-        if not use_channel_context and (
-            node.fetch_parent_failed
-            or (node.parent_msg and len(messages) == max_messages)
-        ):
-            user_warnings.add(
-                f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}"
-            )
+        if not use_channel_context and (node.fetch_parent_failed or (node.parent_msg and len(messages) == max_messages)):
+            user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
 
-    logging.debug(
-        f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}"
-    )
+    logging.debug(f"Context ready. Messages: {len(messages)}. Attachments: {len(new_msg.attachments)}")
 
     # --- Placeholders ---
     now = datetime.now().astimezone()
     user_roles = getattr(new_msg.author, "roles", [])
-    user_roles_str = (
-        ", ".join([role.name for role in user_roles if role.name != "@everyone"])
-        or "None"
-    )
+    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
     guild_emojis = getattr(new_msg.guild, "emojis", [])
     guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
     placeholders = {
@@ -739,9 +541,7 @@ async def on_message(new_msg: discord.Message) -> None:
         return text.strip()
 
     if pre_history_prompt_text:
-        messages.append(
-            dict(role="system", content=replace_placeholders(pre_history_prompt_text))
-        )
+        messages.append(dict(role="system", content=replace_placeholders(pre_history_prompt_text)))
 
     if post_history_prompt_text:
         messages.insert(
@@ -770,14 +570,7 @@ async def on_message(new_msg: discord.Message) -> None:
         max_message_length = 4000
     else:
         max_message_length = 4096 - len(STREAMING_INDICATOR)
-        embed = discord.Embed.from_dict(
-            dict(
-                fields=[
-                    dict(name=warning, value="", inline=False)
-                    for warning in sorted(user_warnings)
-                ]
-            )
-        )
+        embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]))
 
     async def reply_helper(**reply_kwargs) -> None:
         reply_target = new_msg if not response_msgs else response_msgs[-1]
@@ -788,15 +581,11 @@ async def on_message(new_msg: discord.Message) -> None:
         await msg_nodes[response_msg.id].lock.acquire()
 
     try:
-        logging.debug(
-            f"Sending request ({total_tokens} tokens) to {provider} ({model})..."
-        )
+        logging.debug(f"Sending request ({total_tokens} tokens) to {provider} ({model})...")
         async with new_msg.channel.typing():
             first_chunk_received = False
 
-            async for chunk in await openai_client.chat.completions.create(
-                **openai_kwargs
-            ):
+            async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                 if not first_chunk_received:
                     logging.debug("First chunk received from LLM")
                     first_chunk_received = True
@@ -825,19 +614,12 @@ async def on_message(new_msg: discord.Message) -> None:
                 else:
                     curr_content = delta.content or ""
 
-                new_content = (
-                    prev_content
-                    if finish_reason is None
-                    else (prev_content + curr_content)
-                )
+                new_content = prev_content if finish_reason is None else (prev_content + curr_content)
 
                 if response_contents == [] and new_content == "":
                     continue
 
-                if (
-                    start_next_msg := response_contents == []
-                    or len(response_contents[-1] + new_content) > max_message_length
-                ):
+                if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
                     response_contents.append("")
 
                 response_contents[-1] += new_content
@@ -846,28 +628,13 @@ async def on_message(new_msg: discord.Message) -> None:
                     time_delta = datetime.now().timestamp() - last_task_time
 
                     ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                    msg_split_incoming = (
-                        finish_reason is None
-                        and len(response_contents[-1] + curr_content)
-                        > max_message_length
-                    )
+                    msg_split_incoming = finish_reason is None and len(response_contents[-1] + curr_content) > max_message_length
                     is_final_edit = finish_reason is not None or msg_split_incoming
-                    is_good_finish = (
-                        finish_reason is not None
-                        and finish_reason.lower() in ("stop", "end_turn")
-                    )
+                    is_good_finish = finish_reason is not None and finish_reason.lower() in ("stop", "end_turn")
 
                     if start_next_msg or ready_to_edit or is_final_edit:
-                        embed.description = (
-                            response_contents[-1]
-                            if is_final_edit
-                            else (response_contents[-1] + STREAMING_INDICATOR)
-                        )
-                        embed.color = (
-                            EMBED_COLOR_COMPLETE
-                            if msg_split_incoming or is_good_finish
-                            else EMBED_COLOR_INCOMPLETE
-                        )
+                        embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
+                        embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
 
                         if start_next_msg:
                             await reply_helper(embed=embed, silent=True)
@@ -893,18 +660,13 @@ async def on_message(new_msg: discord.Message) -> None:
                 full_response = REGEX_THINK_BLOCK.sub("", full_response).strip()
 
                 if full_response:
-                    response_contents = [
-                        full_response[i : i + max_message_length]
-                        for i in range(0, len(full_response), max_message_length)
-                    ]
+                    response_contents = [full_response[i : i + max_message_length] for i in range(0, len(full_response), max_message_length)]
                 else:
                     response_contents = []
 
             if use_plain_responses:
                 for content in response_contents:
-                    await reply_helper(
-                        view=LayoutView().add_item(TextDisplay(content=content))
-                    )
+                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
 
     except Exception:
         logging.exception("Error while generating response")

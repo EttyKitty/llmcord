@@ -45,15 +45,11 @@ if __name__ == "__main__":
                     input()
                 except EOFError:
                     # Fallback for environments without interactive input (e.g. Docker)
-                    logger.info(
-                        f"No input detected. Waiting {STABLE_THRESHOLD} seconds..."
-                    )
+                    logger.info(f"No input detected. Waiting {STABLE_THRESHOLD} seconds...")
                     time.sleep(STABLE_THRESHOLD)
 
                 # Reset counter after manual intervention
                 retry_count = 0
             else:
-                logger.info(
-                    f"Restarting in {RESTART_DELAY} seconds... (Attempt {retry_count}/{MAX_RETRIES})"
-                )
+                logger.info(f"Restarting in {RESTART_DELAY} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
                 time.sleep(RESTART_DELAY)
