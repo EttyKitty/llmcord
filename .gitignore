@@ -3,6 +3,7 @@
 *
 
 !.gitignore
+!.gitattributes
 
 !*.md
 !*.py
@@ -11,4 +12,7 @@
 !config-example.yaml
 !docker-compose.yaml
 !requirements.txt
-!llmcord.bat
+!starter.bat
+!src
+!docs
+!config

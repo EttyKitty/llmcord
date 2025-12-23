@@ -60,7 +60,7 @@ echo llmcord is starting...
 echo ================================
 echo.
 
-python llmcord.py
+python main.py
 
 REM Check exit code for reload (2)
 if %errorlevel% equ 2 (

@@ -1,5 +1,5 @@
 <h1 align="center">
-  llmcord
+  llmcord (Etty's fork⭐)
 </h1>
 
 <h3 align="center"><i>
@@ -71,23 +71,30 @@ Or run local models with:
 
 ## Setting up and Running
 
-1. Clone the repo:
-   ```bash
-   git clone https://github.com/jakobdylanc/llmcord
-   ```
-2. Create a copy of `config-example.yaml` named `config.yaml` and set it up.
-3. Run the bot
+**1.** Clone the repo:
+```bash
+git clone https://github.com/jakobdylanc/llmcord
+```
 
-   **No Docker:**
-   ```bash
-   python -m pip install -U -r requirements.txt
-   python llmcord.py
-   ```
+**2.** Create a copy of `config-example.yaml` named `config.yaml` and set it up.
 
-   **With Docker:**
-   ```bash
-   docker compose up
-   ```
+**3.** Run the bot.
+
+⭐Through the starter:
+```
+Launch `starter.bat`
+Wait for it to install all requirements
+Be happy
+```
+No Docker:
+```bash
+python -m pip install -U -r requirements.txt
+python main.py
+```
+With Docker:
+```bash
+docker compose up
+```
 
 ## Config settings
 

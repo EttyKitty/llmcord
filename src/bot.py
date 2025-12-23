@@ -1,293 +1,38 @@
 import asyncio
-import json
 import logging
 import os
-import re
 import threading
 import time
 from base64 import b64encode
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Optional
 
 import discord
 import httpx
-import tiktoken
-import yaml
 from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
-# --- Fix for Windows Colors ---
-if os.name == "nt":
-    os.system("")  # This simple hack enables ANSI support in Windows CMD
-
-
-def _str_presenter(dumper, data):
-    """
-    Preserve multiline strings when dumping yaml.
-    https://github.com/yaml/pyyaml/issues/240
-    """
-    if "\n" in data:
-        # Remove trailing spaces messing out the output.
-        block = "\n".join([line.rstrip() for line in data.splitlines()])
-        if data.endswith("\n"):
-            block += "\n"
-        return dumper.represent_scalar("tag:yaml.org,2002:str", block, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
-
-
-yaml.add_representer(str, _str_presenter)
-yaml.representer.SafeRepresenter.add_representer(str, _str_presenter)
-
-
-# --- New Request Logger Class ---
-class RequestLogger:
-    """
-    Handles logging of LLM request payloads to a file.
-    Outputs pretty-printed JSON for readability.
-    """
-
-    def __init__(self, filename: str = "llm_requests.json"):
-        self.logger = logging.getLogger("request_logger")
-        self.logger.setLevel(logging.INFO)
-        self.logger.propagate = False
-
-        if self.logger.handlers:
-            self.logger.handlers.clear()
-
-        handler = logging.FileHandler(filename, mode="w", encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        self.logger.addHandler(handler)
-
-    def log(self, payload: dict[str, Any]) -> None:
-        """
-        Sanitizes and logs the request payload as a pretty-printed JSON object.
-        """
-        try:
-            # Create a shallow copy
-            log_entry = payload.copy()
-
-            # Inject timestamp for context (since we removed the log prefix)
-            log_entry["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # Redact sensitive headers
-            if "extra_headers" in log_entry and log_entry["extra_headers"]:
-                headers = log_entry["extra_headers"].copy()
-                for key in headers:
-                    if any(
-                        sensitive in key.lower()
-                        for sensitive in ("api", "auth", "key", "token")
-                    ):
-                        headers[key] = "REDACTED"
-                log_entry["extra_headers"] = headers
-
-            # Convert to Pretty JSON
-            # indent=4 makes it readable
-            log_message = json.dumps(
-                log_entry, default=str, ensure_ascii=False, indent=4
-            )
-
-            # Log it (logging adds a newline automatically)
-            self.logger.info(log_message)
-        except Exception as e:
-            logging.error(f"Failed to log LLM request: {e}")
-
-
-# Initialize the RequestLogger
-request_logger = RequestLogger()
-
-
-# --- Logging Setup ---
-class ColoredFormatter(logging.Formatter):
-    """Custom formatter to add colors to logs based on severity."""
-
-    # ANSI Escape Codes
-    grey = "\x1b[38;20m"
-    green = "\x1b[32;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-
-    # Your specific log format
-    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-
-    FORMATS = {
-        logging.DEBUG: grey + fmt + reset,
-        logging.INFO: green + fmt + reset,
-        logging.WARNING: yellow + fmt + reset,
-        logging.ERROR: red + fmt + reset,
-        logging.CRITICAL: bold_red + fmt + reset,
-    }
-
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
-        return formatter.format(record)
-
-
-# Create a handler with the colored formatter
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(ColoredFormatter())
-
-# Configure root logger
-logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
-
-# Silence noisy libraries
-logging.getLogger("discord").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-
-
-# Initialize the tokenizer
-# cl100k_base is used by GPT-4, GPT-3.5-turbo, and is a good proxy for others.
-TOKENIZER = tiktoken.get_encoding("cl100k_base")
-
-# --- Regex Patterns ---
-# Matches characters NOT allowed in usernames (alphanumeric, underscore, dash only)
-REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
-# Matches <think> blocks (for reasoning models)
-REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
-
-REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
-REGEX_MULTI_SPACE = re.compile(r" {2,}")
-REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
-
-TYPOGRAPHY_MAP = str.maketrans(
-    {
-        "“": '"',
-        "”": '"',  # Smart double quotes
-        "‘": "'",
-        "’": "'",  # Smart single quotes
-        "—": "-",  # Em-dash
-        "…": "...",  # Ellipsis
-    }
+# --- Imports from new modules ---
+from .config import EDITABLE_SETTINGS, config_manager
+from .logger import request_logger
+from .utils import (
+    EDIT_DELAY_SECONDS,
+    EMBED_COLOR_COMPLETE,
+    EMBED_COLOR_INCOMPLETE,
+    MAX_MESSAGE_NODES,
+    PROVIDERS_SUPPORTING_USERNAMES,
+    REGEX_THINK_BLOCK,
+    REGEX_USER_NAME_SANITIZER,
+    STREAMING_INDICATOR,
+    TOKENIZER,
+    VISION_MODEL_TAGS,
+    MsgNode,
+    clean_response,
 )
-
-EDITABLE_SETTINGS = (
-    "max_text",
-    "max_images",
-    "max_messages",
-    "max_input_tokens",
-    "use_plain_responses",
-    "allow_dms",
-    "use_channel_context",
-    "force_reply_chains",
-    "prefix_users",
-    "sanitize_response",
-)
-
-
-# TODO: Would be cool to add support for external regex loading, instead of hardcoded, like in SillyTavern
-def clean_response(text: str) -> str:
-    text = text.translate(TYPOGRAPHY_MAP)
-    text = REGEX_MULTI_SPACE.sub(" ", text)
-    text = REGEX_EXCESSIVE_NEWLINES.sub("\n\n", text)
-    text = REGEX_TRAILING_WHITESPACE.sub("", text)
-
-    return text.strip()
-
-
-VISION_MODEL_TAGS = (
-    "claude",
-    "gemini",
-    "gemma",
-    "gpt-4",
-    "gpt-5",
-    "grok-4",
-    "llama",
-    "llava",
-    "mistral",
-    "o3",
-    "o4",
-    "vision",
-    "vl",
-)
-PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-
-EMBED_COLOR_COMPLETE = discord.Color.dark_green()
-EMBED_COLOR_INCOMPLETE = discord.Color.orange()
-
-STREAMING_INDICATOR = " ⚪"
-EDIT_DELAY_SECONDS = 1
-
-MAX_MESSAGE_NODES = 500
-
-
-# --- Config Manager ---
-class ConfigManager:
-    def __init__(self):
-        self.config = {}
-        self.load_config()
-
-    def deep_merge(self, base: dict, overrides: dict) -> None:
-        for key, value in overrides.items():
-            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                self.deep_merge(base[key], value)
-            else:
-                base[key] = value
-
-    def load_config(self) -> None:
-        # 1. Load Defaults
-        try:
-            with open("config.yaml", encoding="utf-8") as f:
-                self.config = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            logging.error("config.yaml not found! Exiting...")
-            exit(1)
-
-        # 2. Load User Overrides
-        if os.path.exists("user_config.yaml"):
-            try:
-                with open("user_config.yaml", encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-                self.deep_merge(self.config, user_config)
-            except Exception as e:
-                logging.error(f"Error loading user_config.yaml: {e}")
-
-        # 3. Ensure Runtime Keys
-        self.config.setdefault("channel_models", {})
-        if "default_model" not in self.config and self.config.get("models"):
-            self.config["default_model"] = next(iter(self.config["models"]))
-
-    def update_user_config(self, updates: dict) -> None:
-        """Reads user_config, applies updates, saves, and reloads in-memory config."""
-        current_user_config = {}
-        if os.path.exists("user_config.yaml"):
-            try:
-                with open("user_config.yaml", encoding="utf-8") as f:
-                    current_user_config = yaml.safe_load(f) or {}
-            except Exception as e:
-                logging.error(f"Failed to read user_config.yaml for update: {e}")
-
-        self.deep_merge(current_user_config, updates)
-
-        try:
-            with open("user_config.yaml", "w", encoding="utf-8") as f:
-                yaml.dump(current_user_config, f, indent=2, sort_keys=False)
-            self.load_config()  # Refresh in-memory state
-        except Exception as e:
-            logging.error(f"Failed to write to user_config.yaml: {e}")
-
-    def set_default_model(self, model: str) -> None:
-        self.update_user_config({"default_model": model})
-
-    def set_channel_model(self, channel_id: int, model: str) -> None:
-        # We need to be careful not to overwrite the whole channel_models dict
-        # So we fetch the current structure first in update_user_config logic,
-        # but deep_merge handles the nested update.
-        self.update_user_config({"channel_models": {channel_id: model}})
-
-
-config_manager = ConfigManager()
 
 openai_clients = {}
-
 msg_nodes = {}
 last_task_time = 0
 
@@ -301,23 +46,6 @@ activity = discord.CustomActivity(
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
 httpx_client = httpx.AsyncClient()
-
-
-@dataclass
-class MsgNode:
-    text: Optional[str] = None
-    images: list[dict[str, Any]] = field(default_factory=list)
-
-    role: Literal["user", "assistant"] = "assistant"
-    user_id: Optional[int] = None
-    user_display_name: Optional[str] = None
-
-    has_bad_attachments: bool = False
-    fetch_parent_failed: bool = False
-
-    parent_msg: Optional[discord.Message] = None
-
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def get_openai_client(provider_config: dict) -> AsyncOpenAI:
@@ -599,6 +327,7 @@ async def config_set_key_autocomplete(
         if curr_str.lower() in key.lower()
     ][:25]
 
+
 @config_group.command(
     name="reload", description="Reload config.yaml and user_config.yaml"
 )
@@ -790,7 +519,6 @@ async def on_message(new_msg: discord.Message) -> None:
                 # Double-check after acquiring lock
                 if node.text is None:
                     # 1. Clean Text
-                    # (Using the regex approach we discussed or the simple one)
                     cleaned = msg.content.lstrip()
 
                     # 2. Handle Attachments
@@ -878,7 +606,6 @@ async def on_message(new_msg: discord.Message) -> None:
             formatted_text = (
                 f"{node.user_display_name}(ID:{node.user_id}): {formatted_text}"
             )
-            # node.text = formatted_text
 
         # --- Token Counting ---
         # 1. Calculate Text Tokens
@@ -1186,9 +913,3 @@ threading.Thread(target=console_listener, daemon=True).start()
 
 async def main() -> None:
     await discord_bot.start(config_manager.config["bot_token"])
-
-
-try:
-    asyncio.run(main())
-except KeyboardInterrupt:
-    pass
