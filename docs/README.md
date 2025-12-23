@@ -65,7 +65,7 @@ Or local models with:
 - ⭐**Advanced Prompting:** Supports a `post_history_prompt` to inject instructions at the very end of the context, perfect for reinforcing formatting rules or jailbreaks.
 - ⭐**Clean Output:** Automatically strips `<think>` tags from reasoning models (like DeepSeek R1) and includes a `sanitize_response` option to convert smart typography to ASCII and collapse excessive whitespace.
 - ⭐**Multi-Modal Output Fix**: Mistral model `magistral` notably responds with a multi-modal list, that includes reasoning and text outputs. These responses are now properly accepted by llmcord, without errors.
-- **Customizable Personality:** Full system prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
+- **Customizable Personality:** Pre-history prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
 - **Identity Aware:** Natively uses the `name` API parameter for OpenAI/xAI. ⭐For other providers, the `prefix_users` option automatically prepends user IDs and Display Names to messages so the bot knows who is speaking.
 - **Flexible Model Switching:** Change the global model with `/model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/channelmodel`.
 - **Streamed Responses:** Turns green when complete and automatically handles long message splitting (only in embed response mode).

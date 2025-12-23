@@ -6,7 +6,6 @@ import threading
 import time
 from base64 import b64encode
 from datetime import datetime
-from typing import Optional
 
 import discord
 import httpx
@@ -59,7 +58,7 @@ intents.message_content = True
 activity = discord.CustomActivity(
     name=(config_manager.config.discord.status_message)[:128]
 )
-discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
+discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix="?")
 
 httpx_client = httpx.AsyncClient()
 
@@ -211,7 +210,7 @@ async def config_model_autocomplete(
 async def config_channel_model(
     interaction: discord.Interaction,
     model: str,
-    channel: Optional[discord.abc.GuildChannel] = None,
+    channel: discord.abc.GuildChannel,
 ) -> None:
     # Permission Check
     if (
@@ -250,7 +249,7 @@ async def config_channel_model_autocomplete(
     default_model = config_manager.config.discord.default_model
     channel_models = config_manager.config.discord.channel_models
 
-    current_active = channel_models.get(interaction.channel_id, default_model)
+    current_active = channel_models.get(interaction.channel_id or 0, default_model)
     is_overridden = interaction.channel_id in channel_models
 
     status_text = "(current channel)" if is_overridden else "(current default)"
@@ -391,6 +390,9 @@ async def on_ready() -> None:
 async def on_message(new_msg: discord.Message) -> None:
     global last_task_time
 
+    if not discord_bot.user:
+        return
+
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
@@ -438,9 +440,9 @@ async def on_message(new_msg: discord.Message) -> None:
     )
 
     # Limits
-    max_text = config.chat.max_text_characters
-    max_images = config.chat.max_images_per_request if accept_images else 0
-    max_messages = config.chat.max_history_messages
+    max_text = config.chat.max_text
+    max_images = config.chat.max_images if accept_images else 0
+    max_messages = config.chat.max_messages
     max_input_tokens = config.chat.max_input_tokens
 
     use_plain_responses = config.chat.use_plain_responses
@@ -455,14 +457,14 @@ async def on_message(new_msg: discord.Message) -> None:
     message_history: list[discord.Message] = []
     total_tokens = 0
 
-    system_prompt_text = config.llm.prompts.system
-    post_history_prompt_text = config.llm.prompts.post_history
+    pre_history_prompt_text = config.prompts.pre_history
+    post_history_prompt_text = config.prompts.post_history
 
-    # Reserve tokens for the system prompt
-    if system_prompt_text:
-        total_tokens += len(TOKENIZER.encode(system_prompt_text))
+    # Reserve tokens for the pre_history prompt
+    if pre_history_prompt_text:
+        total_tokens += len(TOKENIZER.encode(pre_history_prompt_text))
 
-    # Reserve tokens for the extra prompt (post-history injection)
+    # Reserve tokens for the post_history prompt
     if post_history_prompt_text:
         total_tokens += len(TOKENIZER.encode(post_history_prompt_text))
 
@@ -512,10 +514,12 @@ async def on_message(new_msg: discord.Message) -> None:
                     curr = prev
                 else:
                     is_thread = curr.channel.type == discord.ChannelType.public_thread
+                    parent = getattr(curr.channel, "parent", None)
                     thread_start = (
                         is_thread
                         and curr.reference is None
-                        and curr.channel.parent.type == discord.ChannelType.text
+                        and parent
+                        and parent.type == discord.ChannelType.text
                     )
                     parent_id = (
                         curr.channel.id
@@ -523,15 +527,14 @@ async def on_message(new_msg: discord.Message) -> None:
                         else getattr(curr.reference, "message_id", None)
                     )
                     if parent_id:
-                        if thread_start:
+                        if (
+                            thread_start
+                            and isinstance(curr.channel, discord.Thread)
+                            and isinstance(curr.channel.parent, discord.TextChannel)
+                        ):
                             curr = (
                                 curr.channel.starter_message
                                 or await curr.channel.parent.fetch_message(parent_id)
-                            )
-                        else:
-                            curr = (
-                                curr.reference.cached_message
-                                or await curr.channel.fetch_message(parent_id)
                             )
                     else:
                         curr = None
@@ -575,14 +578,14 @@ async def on_message(new_msg: discord.Message) -> None:
                             for e in msg.embeds
                         ]
                         + [
-                            c.content
+                            getattr(c, "content", "")
                             for c in msg.components
                             if c.type == discord.ComponentType.text_display
                         ]
                         + [
                             r.text
                             for a, r in zip(good_attachments, att_resps)
-                            if a.content_type.startswith("text")
+                            if a.content_type and a.content_type.startswith("text")
                         ]
                     )
 
@@ -595,7 +598,7 @@ async def on_message(new_msg: discord.Message) -> None:
                             ),
                         )
                         for a, r in zip(good_attachments, att_resps)
-                        if a.content_type.startswith("image")
+                        if a.content_type and a.content_type.startswith("image")
                     ]
 
                     # 5. Metadata
@@ -634,7 +637,7 @@ async def on_message(new_msg: discord.Message) -> None:
             and node.user_display_name is not None
         ):
             formatted_text = (
-                f"{node.user_display_name}(ID:{node.user_id}): {formatted_text}"
+                f"{node.user_display_name}({node.user_id}): {formatted_text}"
             )
 
         # --- Token Counting ---
@@ -735,9 +738,9 @@ async def on_message(new_msg: discord.Message) -> None:
             text = text.replace(key, str(value))
         return text.strip()
 
-    if system_prompt_text:
+    if pre_history_prompt_text:
         messages.append(
-            dict(role="system", content=replace_placeholders(system_prompt_text))
+            dict(role="system", content=replace_placeholders(pre_history_prompt_text))
         )
 
     if post_history_prompt_text:

@@ -1,18 +1,20 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import yaml
 
 EDITABLE_SETTINGS = (
-    "chat.max_text_characters",
-    "chat.max_images_per_request",
-    "chat.max_history_messages",
+    "chat.max_text",
+    "chat.max_images",
+    "chat.max_messages",
     "chat.use_plain_responses",
     "chat.sanitize_response",
     "chat.use_channel_context",
     "chat.force_reply_chains",
+    "chat.max_input_tokens",
+    "chat.prefix_users",
 )
 
 CONFIG_DIR = "config"
@@ -44,23 +46,14 @@ class ChatConfig:
     force_reply_chains: bool = False
     prefix_users: bool = False
     use_channel_context: bool = False
-    max_text_characters: int = 0
-    max_images_per_request: int = 0
-    max_history_messages: int = 0
+    max_text: int = 0
+    max_images: int = 0
+    max_messages: int = 0
     max_input_tokens: int = 0
 
 
 @dataclass
-class LLMPrompts:
-    system: str = ""
-    post_history: str = ""
-
-
-@dataclass
 class LLMConfig:
-    # REMOVED: behavior: ChatConfig = field(default_factory=ChatConfig)
-    # We are using the top-level 'chat' field in RootConfig instead.
-    prompts: LLMPrompts = field(default_factory=LLMPrompts)
     providers: Dict[str, Any] = field(default_factory=dict)
     models: Dict[str, Any] = field(default_factory=dict)
 
@@ -86,8 +79,14 @@ class DiscordSettings:
     status_message: str = ""
     allow_dms: bool = False
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
-    default_model: Optional[str] = None
+    default_model: str = ""
     channel_models: Dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
+class Prompts:
+    pre_history: str = ""
+    post_history: str = ""
 
 
 @dataclass
@@ -95,6 +94,7 @@ class RootConfig:
     discord: DiscordSettings = field(default_factory=DiscordSettings)
     llm: LLMConfig = field(default_factory=LLMConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
+    prompts: Prompts = field(default_factory=Prompts)
 
 
 class ConfigManager:
@@ -165,13 +165,12 @@ class ConfigManager:
             except Exception as e:
                 logging.error(f"Failed to read config.yaml: {e}")
 
-        # Merge new updates into existing user config
         self.deep_merge(current_user_config, updates)
 
         try:
             with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
                 yaml.dump(current_user_config, f, indent=2, sort_keys=False)
-            self.load_config()  # Refresh state
+            self.load_config()
         except Exception as e:
             logging.error(f"Failed to write config.yaml: {e}")
 
@@ -186,7 +185,6 @@ class ConfigManager:
         for key in reversed(keys):
             update_payload = {key: update_payload}
 
-        # FIX: Actually save the configuration
         self.update_user_config(update_payload)
 
     def set_default_model(self, model: str) -> None:
