@@ -16,7 +16,7 @@ from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
-from .config import EDITABLE_SETTINGS, config_manager
+from .config import EDITABLE_SETTINGS, RootConfig, config_manager
 from .logger import request_logger
 from .utils import MsgNode, clean_response
 
@@ -57,9 +57,7 @@ last_task_time = 0
 intents = discord.Intents.default()
 intents.message_content = True
 activity = discord.CustomActivity(
-    name=(
-        config_manager.config.get("status_message") or "github.com/jakobdylanc/llmcord"
-    )[:128]
+    name=(config_manager.config.discord.status_message)[:128]
 )
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
@@ -78,20 +76,20 @@ def get_openai_client(provider_config: dict) -> AsyncOpenAI:
     return openai_clients[base_url]
 
 
-def is_message_allowed(msg: discord.Message, config: dict) -> bool:
+def is_message_allowed(msg: discord.Message, config: RootConfig) -> bool:
     is_dm = msg.channel.type == discord.ChannelType.private
-    permissions = config["permissions"]
+    permissions = config.discord.permissions
 
     # Admin check
-    if msg.author.id in permissions["users"]["admin_ids"]:
+    if msg.author.id in permissions.users.admin_ids:
         return True
 
     # User/Role Checks
     role_ids = set(role.id for role in getattr(msg.author, "roles", ()))
-    allowed_users = permissions["users"]["allowed_ids"]
-    blocked_users = permissions["users"]["blocked_ids"]
-    allowed_roles = permissions["roles"]["allowed_ids"]
-    blocked_roles = permissions["roles"]["blocked_ids"]
+    allowed_users = permissions.users.allowed_ids
+    blocked_users = permissions.users.blocked_ids
+    allowed_roles = permissions.roles.allowed_ids
+    blocked_roles = permissions.roles.blocked_ids
 
     allow_all_users = (
         not allowed_users if is_dm else (not allowed_users and not allowed_roles)
@@ -123,9 +121,10 @@ def is_message_allowed(msg: discord.Message, config: dict) -> bool:
             ),
         )
     )
-    allowed_channels = permissions["channels"]["allowed_ids"]
-    blocked_channels = permissions["channels"]["blocked_ids"]
-    allow_dms = config.get("allow_dms", True)
+
+    allowed_channels = permissions.channels.allowed_ids
+    blocked_channels = permissions.channels.blocked_ids
+    allow_dms = config.discord.allow_dms
 
     allow_all_channels = not allowed_channels
     is_good_channel = (
@@ -156,7 +155,7 @@ async def config_model(interaction: discord.Interaction, model: str) -> None:
     # Permission Check
     if (
         interaction.user.id
-        not in config_manager.config["permissions"]["users"]["admin_ids"]
+        not in config_manager.config.discord.permissions.users.admin_ids
     ):
         await interaction.response.send_message(
             "[You don't have permission to change the default model.]", ephemeral=True
@@ -166,7 +165,7 @@ async def config_model(interaction: discord.Interaction, model: str) -> None:
         )
         return
 
-    current_default = config_manager.config["default_model"]
+    current_default = config_manager.config.discord.default_model
     if model == current_default:
         await interaction.response.send_message(
             f"[`default_model` is already: `{current_default}`.]", ephemeral=True
@@ -190,7 +189,7 @@ async def config_model(interaction: discord.Interaction, model: str) -> None:
 async def config_model_autocomplete(
     interaction: discord.Interaction, curr_str: str
 ) -> list[Choice[str]]:
-    default_model = config_manager.config["default_model"]
+    default_model = config_manager.config.discord.default_model
 
     # Highlights the current GLOBAL model
     choices = (
@@ -200,7 +199,7 @@ async def config_model_autocomplete(
     )
     choices += [
         Choice(name=f"○ {model}", value=model)
-        for model in config_manager.config["models"]
+        for model in config_manager.config.llm.models
         if model != default_model and curr_str.lower() in model.lower()
     ]
     return choices[:25]
@@ -217,7 +216,7 @@ async def config_channel_model(
     # Permission Check
     if (
         interaction.user.id
-        not in config_manager.config["permissions"]["users"]["admin_ids"]
+        not in config_manager.config.discord.permissions.users.admin_ids
     ):
         await interaction.response.send_message(
             "[You don't have permission to change the channel model.]", ephemeral=True
@@ -248,8 +247,8 @@ async def config_channel_model_autocomplete(
     interaction: discord.Interaction, curr_str: str
 ) -> list[Choice[str]]:
     # Determine what is currently active in this channel (Override OR Default)
-    default_model = config_manager.config["default_model"]
-    channel_models = config_manager.config["channel_models"]
+    default_model = config_manager.config.discord.default_model
+    channel_models = config_manager.config.discord.channel_models
 
     current_active = channel_models.get(interaction.channel_id, default_model)
     is_overridden = interaction.channel_id in channel_models
@@ -263,7 +262,7 @@ async def config_channel_model_autocomplete(
     )
     choices += [
         Choice(name=f"○ {model}", value=model)
-        for model in config_manager.config["models"]
+        for model in config_manager.config.llm.models
         if model != current_active and curr_str.lower() in model.lower()
     ]
     return choices[:25]
@@ -271,10 +270,9 @@ async def config_channel_model_autocomplete(
 
 @config_group.command(name="set", description="Edit a specific configuration setting")
 async def config_set(interaction: discord.Interaction, key: str, value: str) -> None:
-    # Permission Check
     if (
         interaction.user.id
-        not in config_manager.config["permissions"]["users"]["admin_ids"]
+        not in config_manager.config.discord.permissions.users.admin_ids
     ):
         await interaction.response.send_message(
             "[You don't have permission to edit configuration.]", ephemeral=True
@@ -288,8 +286,16 @@ async def config_set(interaction: discord.Interaction, key: str, value: str) -> 
         )
         return
 
-    # Infer type from current config
-    current_value = config_manager.config.get(key)
+    try:
+        current_value = config_manager.get_setting_value(key)
+    except AttributeError:
+        await interaction.response.send_message(
+            f"[Setting `{key}` not found in configuration structure.]",
+            ephemeral=True,
+        )
+        return
+
+    target_type = type(current_value)
 
     if current_value is None:
         await interaction.response.send_message(
@@ -325,7 +331,7 @@ async def config_set(interaction: discord.Interaction, key: str, value: str) -> 
         return
 
     # Apply update
-    config_manager.update_user_config({key: parsed_value})
+    config_manager.update_setting(key, parsed_value)
 
     logging.info(
         f"Admin {interaction.user.name} changed config {key} to {parsed_value}"
@@ -347,13 +353,13 @@ async def config_set_key_autocomplete(
 
 
 @config_group.command(
-    name="reload", description="Reload config.yaml and user_config.yaml"
+    name="reload", description="Reload config-example.yaml and config.yaml"
 )
 async def config_reload(interaction: discord.Interaction) -> None:
     # Permission Check
     if (
         interaction.user.id
-        not in config_manager.config["permissions"]["users"]["admin_ids"]
+        not in config_manager.config.discord.permissions.users.admin_ids
     ):
         await interaction.response.send_message(
             "[You don't have permission to reload the config.]", ephemeral=True
@@ -363,7 +369,9 @@ async def config_reload(interaction: discord.Interaction) -> None:
     config_manager.load_config()
 
     logging.info(f"Admin {interaction.user.name} reloaded the configuration")
-    await interaction.response.send_message("[Configuration reloaded from disk.]")
+    await interaction.response.send_message(
+        "[Configuration reloaded from disk.]", ephemeral=True
+    )
 
 
 discord_bot.tree.add_command(config_group)
@@ -371,7 +379,7 @@ discord_bot.tree.add_command(config_group)
 
 @discord_bot.event
 async def on_ready() -> None:
-    if client_id := config_manager.config.get("client_id"):
+    if client_id := config_manager.config.discord.client_id:
         logging.info(
             f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot"
         )
@@ -402,14 +410,13 @@ async def on_message(new_msg: discord.Message) -> None:
         return
 
     # --- Provider Setup ---
-    default_model = config["default_model"]
-    channel_models = config["channel_models"]
+    default_model = config.discord.default_model
+    channel_models = config.discord.channel_models
 
     provider_slash_model = channel_models.get(new_msg.channel.id, default_model)
     try:
         provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-        provider_config = config["providers"][provider]
-
+        provider_config = config.llm.providers[provider]
         openai_client = get_openai_client(provider_config)
     except Exception as e:
         logging.error(
@@ -417,7 +424,7 @@ async def on_message(new_msg: discord.Message) -> None:
         )
         return
 
-    model_parameters = config["models"].get(provider_slash_model, None)
+    model_parameters = config.llm.models.get(provider_slash_model, None)
     extra_headers = provider_config.get("extra_headers")
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (
@@ -430,15 +437,17 @@ async def on_message(new_msg: discord.Message) -> None:
         for x in PROVIDERS_SUPPORTING_USERNAMES
     )
 
-    max_text = config.get("max_text", 100000)
-    max_images = config.get("max_images", 5) if accept_images else 0
-    max_messages = config.get("max_messages", 25)
-    max_input_tokens = config.get("max_input_tokens", 4096)
+    # Limits
+    max_text = config.chat.max_text_characters
+    max_images = config.chat.max_images_per_request if accept_images else 0
+    max_messages = config.chat.max_history_messages
+    max_input_tokens = config.chat.max_input_tokens
 
-    use_channel_context = config.get("use_channel_context", False)
-    prefix_users = config.get("prefix_users", False)
-    force_reply_chains = config.get("force_reply_chains", False)
-    sanitize_response = config.get("sanitize_response", False)
+    use_plain_responses = config.chat.use_plain_responses
+    use_channel_context = config.chat.use_channel_context
+    prefix_users = config.chat.prefix_users
+    force_reply_chains = config.chat.force_reply_chains
+    sanitize_response = config.chat.sanitize_response
 
     # --- Context Building ---
     messages: list[dict] = []
@@ -446,13 +455,16 @@ async def on_message(new_msg: discord.Message) -> None:
     message_history: list[discord.Message] = []
     total_tokens = 0
 
+    system_prompt_text = config.llm.prompts.system
+    post_history_prompt_text = config.llm.prompts.post_history
+
     # Reserve tokens for the system prompt
-    if config.get("system_prompt"):
-        total_tokens += len(TOKENIZER.encode(config["system_prompt"]))
+    if system_prompt_text:
+        total_tokens += len(TOKENIZER.encode(system_prompt_text))
 
     # Reserve tokens for the extra prompt (post-history injection)
-    if config.get("post_history_prompt"):
-        total_tokens += len(TOKENIZER.encode(config["post_history_prompt"]))
+    if post_history_prompt_text:
+        total_tokens += len(TOKENIZER.encode(post_history_prompt_text))
 
     # Force reply-chain mode if replying to a specific message
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
@@ -723,14 +735,15 @@ async def on_message(new_msg: discord.Message) -> None:
             text = text.replace(key, str(value))
         return text.strip()
 
-    if system_prompt := config.get("system_prompt"):
+    if system_prompt_text:
         messages.append(
-            dict(role="system", content=replace_placeholders(system_prompt))
+            dict(role="system", content=replace_placeholders(system_prompt_text))
         )
 
-    if post_history_prompt := config.get("post_history_prompt"):
+    if post_history_prompt_text:
         messages.insert(
-            0, dict(role="system", content=replace_placeholders(post_history_prompt))
+            0,
+            dict(role="system", content=replace_placeholders(post_history_prompt_text)),
         )
 
     # --- Response Generation ---
@@ -750,7 +763,7 @@ async def on_message(new_msg: discord.Message) -> None:
     # Log the request
     request_logger.log(openai_kwargs)
 
-    if use_plain_responses := config.get("use_plain_responses", False):
+    if use_plain_responses:
         max_message_length = 4000
     else:
         max_message_length = 4096 - len(STREAMING_INDICATOR)
@@ -930,4 +943,4 @@ threading.Thread(target=console_listener, daemon=True).start()
 
 
 async def main() -> None:
-    await discord_bot.start(config_manager.config["bot_token"])
+    await discord_bot.start(config_manager.config.discord.bot_token)

@@ -16,25 +16,31 @@ llmcord transforms Discord into a collaborative LLM frontend. It works with prac
 
 ## Features
 
-### Reply-based chat system:
-Just @ the bot to start a conversation and reply to continue. Build conversations with reply chains!
+### Chat System:
 
-You can:
-- Branch conversations endlessly
-- Continue other people's conversations
-- @ the bot while replying to ANY message to include it in the conversation
+**1. Reply Chains (Default)**
 
-Additionally:
-- When DMing the bot, conversations continue automatically (no reply required). To start a fresh conversation, just @ the bot. You can still reply to continue from anywhere.
-- You can branch conversations into [threads](https://support.discord.com/hc/en-us/articles/4403205878423-Threads-FAQ). Just create a thread from any message and @ the bot inside to continue.
-- Back-to-back messages from the same user are automatically chained together. Just reply to the latest one and the bot will see all of them.
+The classic, organized way to chat. The bot only sees the specific chain of messages you reply to.
+- **Start:** @ the bot to start a new conversation.
+- **Continue:** Reply to the bot's message to continue the chat.
+- **Branch:** You can reply to the same message multiple times to create different conversation branches.
+- **Thread:** You can branch conversations into Discord Threads.
+
+**2. Direct Messages**
+
+Enable `allow_dms` in the config to make the bot respond to Direct Messages.
+- **No Replies or Mentions Needed:** Just talk normally.
+- **Context:** The bot reads the entire DM history (up to the token limit).
+
+**3. ⭐Channel Context**
+
+Enable `use_channel_context` in the config to make the bot behave like a standard chatbot.
+- **Context:** The bot reads the entire channel history (up to the token limit).
+- **Hybrid Mode:** If you enable `force_reply_chains`, the bot reads the whole channel *unless* you reply to a specific message, allowing you to isolate conversations when needed.
 
 ---
 
-### Model switching:
-- **Global override:** Use `/model` to switch the default model used across all channels.
-- ⭐**Channel override:** Use `/channelmodel` to set a specific model for the current channel (useful for dedicated coding or RP channels).
-
+### API support:
 llmcord supports remote models from:
 - [OpenAI API](https://platform.openai.com/docs/models)
 - [xAI API](https://docs.x.ai/docs/models)
@@ -43,31 +49,28 @@ llmcord supports remote models from:
 - [Groq API](https://console.groq.com/docs/models)
 - [OpenRouter API](https://openrouter.ai/models)
 
-Or run local models with:
+Or local models with:
 - [Ollama](https://ollama.com)
 - [LM Studio](https://lmstudio.ai)
 - [vLLM](https://github.com/vllm-project/vllm)
 
-...Or use any other OpenAI compatible API server.
+...Or any other OpenAI compatible API server.
 
 ---
 
 ### And more:
-- Supports image attachments when using a vision model (like gpt-5, grok-4, claude-4, etc.)
-- Supports text file attachments (.txt, .py, .c, etc.)
-- ⭐Supports the entire chat as context: Using the `use_channel_context` option
-- ⭐Reasoning model support: Automatically handles `<think>` blocks from reasoning models like DeepSeek R1
-- ⭐Smart context management: Uses `tiktoken` to count tokens and manage the context window within limits
-- Customizable personality (aka system prompt)
-- ⭐A bunch of placeholders to inject into the system prompt (like `{guild_name}` or `{user_roles}`)
-- User identity aware with OpenAI API and xAI API through the `name` parameter in the message object
-- ⭐User identity aware with all other APIs through the `prefix_users` option
-- Streamed responses (turns green when complete, automatically splits into separate messages when too long)
-- Hot reloading config (you can change settings without restarting the bot)
-- Displays helpful warnings when appropriate (like "⚠️ Only using last 25 messages" when the customizable message limit is exceeded)
-- Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls
-- Fully asynchronous
-- 1 Python file, ~350 lines of code
+- ⭐**Zero-Hassle Launcher:** Included `starter.bat` automatically creates a virtual environment, installs/updates dependencies, and handles auto-restarts.
+- **Multi-Modal Support:** Handles images (Vision models) and text file attachments (.txt, .py, .c, etc.).
+- ⭐**Smart Context Management:** Uses `tiktoken` to enforce `max_input_tokens`, automatically dropping older messages to ensure you never hit API limits.
+- ⭐**Advanced Prompting:** Supports a `post_history_prompt` to inject instructions at the very end of the context—perfect for reinforcing formatting rules or jailbreaks.
+- ⭐**Clean Output:** Automatically strips `<think>` tags from reasoning models (like DeepSeek R1) and includes a `sanitize_response` option to convert smart typography to ASCII and collapse excessive whitespace.
+- **Customizable Personality:** Full system prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
+- **Identity Aware:** Natively uses the `name` API parameter for OpenAI/xAI. ⭐For other providers, the `prefix_users` option automatically prepends user IDs and Display Names to messages so the bot knows who is speaking.
+- **Flexible Model Switching:** Change the global model with `/model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/channelmodel`.
+- **Streamed Responses:** Turns green when complete and automatically handles long message splitting (only in embed response mode).
+- ⭐**Hot Reloading:** Use `/reload` to reload `config.yaml` settings without restarting the bot.
+- **Efficient Caching:** Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls.
+- **Fully Asynchronous**
 
 ## Setting up and Running
 
@@ -80,61 +83,26 @@ git clone https://github.com/jakobdylanc/llmcord
 
 **3.** Run the bot.
 
-⭐Through the starter:
-```
-Launch `starter.bat`
-Wait for it to install all requirements
-Be happy
-```
-No Docker:
-```bash
-python -m pip install -U -r requirements.txt
-python main.py
-```
-With Docker:
+⭐Using the Starter (Recommended for Windows):
+Simply launch `starter.bat`. It will:
+1. Create a secure virtual environment.
+2. Install/Update all dependencies automatically.
+3. Launch the bot (and auto-restart it if you reload configs).
+
+**Using Docker:**
 ```bash
 docker compose up
 ```
 
-## Config settings
-
-### Discord settings:
-
-| Setting | Description |
-| --- | --- |
-| **bot_token** | Create a new Discord bot at [discord.com/developers/applications](https://discord.com/developers/applications) and generate a token under the "Bot" tab. Also enable `MESSAGE CONTENT INTENT`. |
-| **client_id** | Found under the "OAuth2" tab of the Discord bot you just made. |
-| **status_message** | Set a custom message that displays on the bot's Discord profile.<br /><br />**Max 128 characters.** |
-| **allow_dms** | Set to `false` to disable direct message access. (Default: `true`) |
-| **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model` and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
-
-### Chat settings:
-
-| Setting | Description |
-| --- | --- |
-| **max_text** | The maximum amount of text allowed in a single message, including text from file attachments. (Default: `100,000`) |
-| **max_images** | The maximum number of image attachments allowed in a single message. (Default: `5`)<br /><br />**Only applicable when using a vision model.** |
-| **max_messages** | The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped. (Default: `25`) |
-| ⭐**max_input_tokens** | The maximum number of tokens allowed in the input context (text + images). When this limit is reached, older messages are dropped from the context. Uses `cl100k_base` encoding (GPT-4 standard). (Default: `4096`) |
-| **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often. (Default: `false`)<br /><br />**Also disables streamed responses and warning messages.** |
-| ⭐**use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
-| ⭐**force_reply_chains** | Only used if `use_channel_context` is `true`. When set to `true`, replying to a specific message will force the bot to use the "reply chain" context mode instead of reading the whole channel history. (Default: `false`) |
-| ⭐**prefix_users** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
-| ⭐**sanitize_response** | When set to `true`, the bot cleans up the AI's output before sending it. This converts 'smart' typography (curly quotes, em-dashes) to standard ASCII characters, and collapses excessive whitespace/newlines to keep messages compact. (Default: `false`) |
-
-### LLM settings:
-
-| Setting | Description |
-| --- | --- |
-| **providers** | Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry. Popular providers (`openai`, `ollama`, etc.) are already included.<br /><br />**Only supports OpenAI compatible APIs.**<br /><br />**Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data. See the included `azure-openai` provider for an example.** |
-| **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
-| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />⭐**Supported placeholders:**<br />`{date}`, `{time}`, `{bot_name}`, `{bot_id}`, `{model}`, `{provider}`, `{user_display_name}`, `{user_id}`, `{user_roles}`, `{guild_name}`, `{guild_emojis}`, `{channel_name}`, `{channel_topic}`, `{channel_nsfw}`.<br /><br />Leave blank for no system prompt. |
-| ⭐**post_history_prompt** | A prompt that is inserted at the very end of the conversation history (just before the model generates a response). This is highly effective for "reminding" the model of formatting rules, personality quirks, or jailbreaks that it might otherwise forget in long conversations. <br /><br />**Supports the same placeholders as `system_prompt`.** |
+**Using Python manually:**
+```bash
+python -m pip install -U -r requirements.txt
+python main.py
+```
 
 ## Notes
 
 - If you're having issues, try my suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
-- ⭐If you use a model that outputs chain-of-thought in `<think>` tags (like DeepSeek R1), the bot will automatically strip these tags (and contents) from the final response to keep the chat clean, and log that it did so.
 - PRs are welcome :)
 
 ## Star History

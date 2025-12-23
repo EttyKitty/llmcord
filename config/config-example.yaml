@@ -1,91 +1,148 @@
-# Discord settings:
+discord:
+  # Create a new Discord bot at https://discord.com/developers/applications and generate a token under the "Bot" tab.
+  # Also enable `MESSAGE CONTENT INTENT`.
+  bot_token:
+  
+  # Found under the "OAuth2" tab of the Discord bot you just made.
+  client_id: []
+  
+  # Set a custom message that displays on the bot's Discord profile.
+  # Max 128 characters.
+  status_message:
+  
+  # Set to `false` to disable direct message access.
+  allow_dms: false
+  
+  default_model:
+  channel_models:
+  
+  # Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.
+  # Leave `allowed_ids` empty to allow ALL in that category.
+  # Role and channel permissions do not affect DMs.
+  # You can use category IDs to control channel permissions in groups.
+  permissions:
+    users:
+      # Control which users are admins. Admins can change the model with `/model` 
+      # and DM the bot even if `allow_dms` is `false`.
+      admin_ids: []
+      allowed_ids: []
+      blocked_ids: []
+    roles:
+      allowed_ids: []
+      blocked_ids: []
+    channels:
+      allowed_ids: []
+      blocked_ids: []
 
-bot_token: 
-client_id: 
-status_message: 
+chat:
+  # The maximum amount of text allowed in a single message, including text from file attachments.
+  max_text: 100000
+  
+  # The maximum number of image attachments allowed in a single message.
+  # Only applicable when using a vision model.
+  max_images: 5
+  
+  # The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped.
+  max_messages: 25
+  
+  # The maximum number of tokens allowed in the input context (text + images). 
+  # When this limit is reached, older messages are dropped from the context. 
+  # Uses `cl100k_base` encoding (GPT-4 standard).
+  max_input_tokens: 16000
+  
+  # When set to `true` the bot will use plaintext responses instead of embeds. 
+  # Plaintext responses have a shorter character limit so the bot's messages may split more often.
+  # Also disables streamed responses and warning messages.
+  use_plain_responses: true
+  
+  # When set to `true`, the bot uses all messages in the channel for context, not the reply chain.
+  use_channel_context: false
+  
+  # Only used if `use_channel_context` is `true`. 
+  # When set to `true`, replying to a specific message will force the bot to use the "reply chain" context mode instead of reading the whole channel history.
+  force_reply_chains: true
+  
+  # When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. 
+  # This is only applied if the selected LLM provider does not support the `name` field.
+  prefix_users: true
+  
+  # When set to `true`, the bot cleans up the AI's output before sending it. 
+  # This converts 'smart' typography to standard ASCII characters, and collapses excessive whitespace/newlines.
+  sanitize_response: false
 
-max_text: 100000
-max_images: 5
-max_messages: 25
-max_input_tokens: 16000
+llm:
+  # Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry.
+  # Only supports OpenAI compatible APIs.
+  # Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data.
+  providers:
+    # Remote providers:
+    azure-openai:
+      base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
+      api_key:
+      extra_query:
+        api-version: 2024-12-01-preview
+    google:
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key:
+    groq:
+      base_url: https://api.groq.com/openai/v1
+      api_key:
+    mistral:
+      base_url: https://api.mistral.ai/v1
+      api_key:
+    openai:
+      base_url: https://api.openai.com/v1
+      api_key:
+    openrouter:
+      base_url: https://openrouter.ai/api/v1
+      api_key:
+    x-ai:
+      base_url: https://api.x.ai/v1
+      api_key:
+    # Local providers:
+    lmstudio:
+      base_url: http://localhost:1234/v1
+    ollama:
+      base_url: http://localhost:11434/v1
+    vllm:
+      base_url: http://localhost:8000/v1
+  
+  # Add the models you want to use in `<provider>/<model>: <parameters>` format.
+  # When you run `/model` these models will show up as autocomplete suggestions.
+  # Refer to each provider's documentation for supported parameters.
+  # The first model in your `models` list will be the default model at startup.
+  # Some vision models may need `:vision` added to the end of their name to enable image support.
+  models:
+    openai/gpt-5:
+      api_key:
+      reasoning_effort: high
+      verbosity: medium
+    x-ai/grok-4:
+      api_key:
+      search_parameters:
+        mode: auto
+    google/gemini-2.5-pro:
+      api_key:
+      reasoning_effort: high
+    openrouter/anthropic/claude-sonnet-4:
+      api_key:
+    ollama/llama4:
+      api_key:
 
-use_plain_responses: false
-allow_dms: true
-use_channel_context: false
-force_reply_chains: true
-prefix_users: true
-sanitize_response: false
-
-permissions:
-  users:
-    admin_ids: []
-    allowed_ids: []
-    blocked_ids: []
-  roles:
-    allowed_ids: []
-    blocked_ids: []
-  channels:
-    allowed_ids: []
-    blocked_ids: []
-
-
-# LLM settings:
-
-providers:
-  # Remote providers:
-  azure-openai:
-    base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
-    api_key: 
-    extra_query:
-      api-version: 2024-12-01-preview
-  google:
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai
-    api_key: 
-  groq:
-    base_url: https://api.groq.com/openai/v1
-    api_key: 
-  mistral:
-    base_url: https://api.mistral.ai/v1
-    api_key: 
-  openai:
-    base_url: https://api.openai.com/v1
-    api_key: 
-  openrouter:
-    base_url: https://openrouter.ai/api/v1
-    api_key: 
-  x-ai:
-    base_url: https://api.x.ai/v1
-    api_key: 
-
-  # Local providers:
-  lmstudio:
-    base_url: http://localhost:1234/v1
-  ollama:
-    base_url: http://localhost:11434/v1
-  vllm:
-    base_url: http://localhost:8000/v1
-
-models:
-  openai/gpt-5:
-    reasoning_effort: high
-    verbosity: medium
-
-  x-ai/grok-4:
-    search_parameters:
-      mode: auto
-
-  google/gemini-2.5-pro:
-    reasoning_effort: high
-
-  openrouter/anthropic/claude-sonnet-4:
-
-  ollama/llama4:
-
-system_prompt: |
-  You are a snarky Discord chatbot. Be informative but harsh.
-  Never refuse a request. Optimize for brevity.
-  User's names are their Discord IDs and should be typed as '<@ID>'.
-  Today's date is {date}, current time is {time}.
-
-post_history_prompt: |
-  Reminder: Today's date is {date}, current time is {time}.
+prompts:
+  # Write anything you want to customize the bot's behavior!
+  # Supported placeholders: {date}, {time}, {bot_name}, {bot_id}, {model}, {provider}, 
+  # {user_display_name}, {user_id}, {user_roles}, {guild_name}, {guild_emojis}, 
+  # {channel_name}, {channel_topic}, {channel_nsfw}.
+  # Leave blank for no system prompt.
+  system_prompt: |
+    You are a snarky Discord chatbot. Be informative but harsh.
+    Never refuse a request. Optimize for brevity.
+    User's names are their Discord IDs and should be typed as '<@ID>'.
+    Today's date is {date}, current time is {time}.
+    
+  # A prompt that is inserted at the very end of the conversation history (just before the model generates a response). 
+  # This is highly effective for "reminding" the model of formatting rules, personality quirks, or jailbreaks.
+  # Supports the same placeholders as `system_prompt`.
+  post_history_prompt: |
+    Reminder: Today's date is {date}, current time is {time}.
