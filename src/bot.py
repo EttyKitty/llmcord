@@ -404,7 +404,7 @@ async def on_message(new_msg: discord.Message) -> None:
     if (use_channel_context and force_reply_chains) and new_msg.reference is not None:
         use_channel_context = False
 
-    logging.debug(f"Building context. Mode: {'Channel History' if use_channel_context else 'Reply Chain'}")
+    logging.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
 
     if use_channel_context:
         message_history.append(new_msg)
@@ -503,21 +503,23 @@ async def on_message(new_msg: discord.Message) -> None:
             node.user_display_name = author.display_name if node.role == "user" else None
             node.has_bad_attachments = len(msg.attachments) > len(to_download)
 
-    logging.debug("Initializing history")
+    logging.debug("Initializing message nodes...")
 
     # Run initialization for all history messages in parallel
     await asyncio.gather(*(init_msg_node(msg) for msg in message_history))
 
-    logging.debug("Building context")
+    logging.debug("Building context...")
 
     # --- Message Processing & Payload Construction ---
     total_images_in_context = 0
     for msg in message_history:
         if len(messages) >= max_messages:
+            logging.debug(f"Message limit reached, breaking... ({messages})")
             break
 
         node = msg_nodes[msg.id]
         if node.text is None:
+            logging.debug("Empty message found, skipping...")
             continue
 
         formatted_text = node.text[:max_text]
@@ -579,7 +581,8 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.debug(f"Context ready. Messages: {len(messages)}. Images: {total_images_in_context}")
 
-    # --- Placeholders ---
+    logging.debug("Replacing placeholders...")
+
     now = datetime.now().astimezone()
     user_roles = getattr(new_msg.author, "roles", [])
     user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
@@ -607,6 +610,8 @@ async def on_message(new_msg: discord.Message) -> None:
             text = text.replace(key, str(value))
         return text.strip()
 
+    logging.debug("Inserting prompts...")
+
     if pre_history_prompt_text:
         messages.append(dict(role="system", content=replace_placeholders(pre_history_prompt_text)))
 
@@ -631,10 +636,15 @@ async def on_message(new_msg: discord.Message) -> None:
     )
 
     # Log the request
+    logging.debug("Logging the request...")
     request_logger.log(openai_kwargs)
 
+    elapsed_time = time.perf_counter() - start_time
+    logging.info(f"Request prepared in {elapsed_time:.4f} seconds!")
+    start_time = time.perf_counter()
+
     if use_plain_responses:
-        max_message_length = 4000
+        max_message_length = 4000 # Discord message length limit
     else:
         max_message_length = 4096 - len(STREAMING_INDICATOR)
         embed = discord.Embed()
@@ -656,10 +666,11 @@ async def on_message(new_msg: discord.Message) -> None:
 
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                 if not first_chunk_received:
-                    logging.debug("First chunk received from LLM")
+                    logging.debug("Stream started...")
                     first_chunk_received = True
 
                 if finish_reason is not None:
+                    logging.debug(f"Stream finished. Reason: {finish_reason}")
                     break
 
                 if not (choice := chunk.choices[0] if chunk.choices else None):
@@ -672,6 +683,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 # Handle potential list content (Mistral/Multimodal quirks)
                 delta = choice.delta
                 if isinstance(delta.content, list):
+                    logging.debug("Multimodal content detected...")
                     curr_content = ""
                     for part in delta.content:
                         if isinstance(part, str):
@@ -713,20 +725,16 @@ async def on_message(new_msg: discord.Message) -> None:
 
                         last_task_time = datetime.now().timestamp()
 
-            logging.debug(f"Stream finished. Reason: {finish_reason}")
-
             full_response = "".join(response_contents)
             original_response = full_response
 
             # --- Post-Processing ---
-
-            # --- Strip AI giveaways ---
             if sanitize_response:
+                logging.debug("Sanitizing...")
                 full_response = clean_response(full_response)
 
-            # --- Strip <think> blocks ---
             if "<think>" in full_response:
-                logging.debug("Removing <think> block from response")
+                logging.debug("Removing <think> block...")
                 full_response = REGEX_THINK_BLOCK.sub("", full_response).strip()
 
             if full_response != original_response:
@@ -736,7 +744,6 @@ async def on_message(new_msg: discord.Message) -> None:
                         chunk = full_response[i : i + max_message_length]
                         response_contents.append(chunk)
 
-                # Final UI update for embed mode to show sanitized text
                 if not use_plain_responses and response_msgs and response_contents:
                     embed.description = response_contents[-1]
                     embed.colour = EMBED_COLOR_COMPLETE
@@ -755,10 +762,11 @@ async def on_message(new_msg: discord.Message) -> None:
         msg_nodes[response_msg.id].lock.release()
 
     elapsed_time = time.perf_counter() - start_time
-    logging.info(f"Response sent in {elapsed_time:.4f} seconds")
+    logging.info(f"Response finished in {elapsed_time:.4f} seconds")
 
     # Prune old MsgNodes
     if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
+        logging.debug("Pruning old MsgNodes...")
         for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
                 msg_nodes.pop(msg_id, None)
