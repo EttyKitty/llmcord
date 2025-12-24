@@ -2,4 +2,5 @@ discord.py>=2.6.0
 httpx
 openai
 pyyaml
+types-PyYAML
 tiktoken

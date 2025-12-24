@@ -107,27 +107,22 @@ llm:
     vllm:
       base_url: http://localhost:8000/v1
   
-  # Add the models you want to use in `<provider>/<model>: <parameters>` format.
-  # When you run `/model` these models will show up as autocomplete suggestions.
+  # Add the models you want to use in `provider/model: parameters` format.
+  # When you run `/config model` these models will show up as autocomplete suggestions.
   # Refer to each provider's documentation for supported parameters.
   # The first model in your `models` list will be the default model at startup.
   # Some vision models may need `:vision` added to the end of their name to enable image support.
   models:
-    # openai/gpt-5:
-    #   api_key:
-    #   reasoning_effort: high
-    #   verbosity: medium
-    # x-ai/grok-4:
-    #   api_key:
-    #   search_parameters:
-    #     mode: auto
-    # google/gemini-2.5-pro:
-    #   api_key:
-    #   reasoning_effort: high
-    # openrouter/anthropic/claude-sonnet-4:
-    #   api_key:
-    # ollama/llama4:
-    #   api_key:
+    # Be sure to replace this example with an actual model in your `config.yaml` or the bot'll break.
+    exampleprovider/example-model-name:
+      temperature: 1
+      top_p: 1
+      top_k: 0
+      frequency_penalty: 0
+      presence_penalty: 0
+      max_tokens: 0
+      n: 0
+      reasoning_effort: auto
 
 prompts:
   # Write anything you want to customize the bot's behavior!

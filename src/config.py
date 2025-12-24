@@ -98,7 +98,7 @@ class RootConfig:
 
 
 class ConfigManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.config: RootConfig = RootConfig()
         self.load_config()
 
@@ -113,7 +113,7 @@ class ConfigManager:
 
     def load_config(self) -> None:
         # 1. Load Defaults
-        raw_config = {}
+        raw_config: dict = {}
         try:
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
@@ -157,7 +157,7 @@ class ConfigManager:
         Reads config.yaml, applies deep merge with updates,
         saves to disk, and reloads the in-memory config.
         """
-        current_user_config = {}
+        current_user_config: dict = {}
         if os.path.exists(USER_CONFIG_FILE):
             try:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
