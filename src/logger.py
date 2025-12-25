@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import ClassVar
 
-from main import logger
+logger = logging.getLogger(__name__)
 
 # --- Fix for Windows Colors ---
 if os.name == "nt":

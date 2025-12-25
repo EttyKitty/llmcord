@@ -1,5 +1,6 @@
 """Configuration management module for the application."""
 
+import logging
 import sys
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -7,8 +8,6 @@ from typing import TypeVar
 
 import yaml
 import yaml.representer
-
-from main import logger
 
 EDITABLE_SETTINGS = (
     "chat.max_text",
@@ -21,11 +20,11 @@ EDITABLE_SETTINGS = (
     "chat.max_input_tokens",
     "chat.prefix_users",
 )
-
 CONFIG_DIR = Path("config")
 CONFIG_FILE = CONFIG_DIR / "config-example.yaml"
 USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
+logger = logging.getLogger(__name__)
 ConfigValue = str | int | bool | float | list | dict | None
 T = TypeVar("T")
 
