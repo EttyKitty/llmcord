@@ -130,7 +130,7 @@ class ConfigManager:
                     user_overrides = yaml.safe_load(f) or {}
                 self.deep_merge(raw_config, user_overrides, replace_keys={"models"})
             except Exception:
-                logging.exception(f"Error loading config.yaml!")
+                logging.exception("Error loading config.yaml!")
 
         # 3. Map to Dataclass
         self.config = self._map_to_dataclass(RootConfig, raw_config)
@@ -162,7 +162,7 @@ class ConfigManager:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
                     current_user_config = yaml.safe_load(f) or {}
             except Exception:
-                logging.exception(f"Failed to read config.yaml!")
+                logging.exception("Failed to read config.yaml!")
 
         self.deep_merge(current_user_config, updates)
 
@@ -171,7 +171,7 @@ class ConfigManager:
                 yaml.dump(current_user_config, f, indent=2, sort_keys=False)
             self.load_config()
         except Exception:
-            logging.exception(f"Failed to write config.yaml!")
+            logging.exception("Failed to write config.yaml!")
 
     def update_setting(self, path: str, value: Any) -> None:
         """Update a setting using dot notation (e.g. 'chat.sanitize_response').

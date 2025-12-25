@@ -184,6 +184,11 @@ class LLMCordBot(commands.Bot):
                     if is_valid_type and is_expected_author:
                         next_msg = prev
                     break
+
+            if next_msg:
+                current_msg = next_msg
+            else:
+                break
         return message_history
 
     async def _init_msg_node(self, msg: discord.Message) -> None:
@@ -283,7 +288,10 @@ class LLMCordBot(commands.Bot):
         return text.strip()
 
     async def on_message(self, message: discord.Message) -> None:
-        """Event handler for new messages. Orchestrates the response flow."""
+        """Event handler for new messages. Orchestrates the response flow.
+
+        :param message: The incoming Discord message to process.
+        """
         if not self.safe_user or message.author.bot:
             return
 
