@@ -57,6 +57,49 @@ TOKENIZER = tiktoken.get_encoding("cl100k_base")
 logger = logging.getLogger(__name__)
 
 
+async def main() -> None:
+    """Entry point for the bot application.
+
+    Initializes Discord intents, creates the bot instance, starts the console listener,
+    and runs the bot with the configured token.
+
+    :return: None
+    :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
+    """
+    intents = discord.Intents.default()
+    intents.message_content = True
+    activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
+
+    bot = LLMCordBot(intents=intents, activity=activity)
+    threading.Thread(target=console_listener, daemon=True).start()
+
+    try:
+        async with bot:
+            await bot.start(config_manager.config.discord.bot_token)
+    except KeyboardInterrupt:
+        pass
+
+
+def console_listener() -> None:
+    """Listen for console commands in a blocking loop.
+
+    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
+
+    :return: None
+    """
+    try:
+        while True:
+            command = input().strip().lower()
+            if command == "reload":
+                os._exit(2)
+            elif command in ("exit", "stop", "quit"):
+                os._exit(0)
+            else:
+                logger.warning("Unknown command: %s", command)
+    except EOFError:
+        pass
+
+
 class LLMCordBot(commands.Bot):
     """The main bot class for llmcord, encapsulating state and logic."""
 
@@ -112,25 +155,65 @@ class LLMCordBot(commands.Bot):
 
         logger.info("Bot ready. Logged in as %s", self.safe_user)
 
-    def get_openai_client(self, provider_config: ConfigValue) -> AsyncOpenAI:
-        """Retrieve or initialize an OpenAI-compatible client for a specific provider.
+    async def on_message(self, message: discord.Message) -> None:
+        """Event handler for new messages. Orchestrates the response flow.
 
-        :param provider_config: The configuration dictionary for the provider.
-        :return: An AsyncOpenAI client instance.
+        :param message: The incoming Discord message to process.
         """
-        if not isinstance(provider_config, dict):
-            error = f"Provider config must be a dict, got {type(provider_config)}"
-            raise TypeError(error)
+        if not self.safe_user or message.author.bot:
+            return
 
-        base_url = provider_config["base_url"]
-        if base_url not in self.openai_clients:
-            self.openai_clients[base_url] = AsyncOpenAI(
-                base_url=base_url,
-                api_key=provider_config.get("api_key", "sk-no-key-required"),
-                http_client=self.httpx_client,
-            )
+        if not self._is_message_allowed(message):
+            logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
+            return
 
-        return self.openai_clients[base_url]
+        start_time = time.perf_counter()
+
+        # 1. Configuration Resolution
+        try:
+            provider, model, provider_config, openai_client, accept_images, accept_usernames = self._resolve_llm_configuration(message)
+        except (ValueError, KeyError, TypeError):
+            logger.exception("Failed to resolve LLM configuration!")
+            return
+
+        # 2. Context Building
+        # Generate system prompts early to calculate their token cost
+        pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
+        post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
+
+        system_token_count = 0
+        if pre_history:
+            system_token_count += len(TOKENIZER.encode(pre_history))
+        if post_history:
+            system_token_count += len(TOKENIZER.encode(post_history))
+
+        # Exceptions here will be handled by discord.py's global error handler
+        message_history = await self._prepare_message_history(message)
+
+        messages_payload, user_warnings = await self._build_messages_payload(
+            message_history=message_history,
+            system_token_count=system_token_count,
+            accept_images=accept_images,
+            accept_usernames=accept_usernames,
+        )
+
+        # 3. Prompt Insertion
+        if pre_history:
+            messages_payload.append({"role": "system", "content": pre_history})
+        if post_history:
+            messages_payload.insert(0, {"role": "system", "content": post_history})
+
+        elapsed_time = time.perf_counter() - start_time
+        logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
+
+        # 4. Parameter Preparation
+        chat_params = self._build_chat_params(model, messages_payload, provider, provider_config)
+
+        # 5. Generation
+        await self._generate_response(message, openai_client, chat_params, user_warnings)
+
+        # 6. Cleanup
+        self._prune_msg_nodes()
 
     def _is_message_allowed(self, msg: discord.Message) -> bool:
         """Check if the message author and channel are allowed based on configuration.
@@ -166,6 +249,71 @@ class LLMCordBot(commands.Bot):
         is_bad_channel = not is_good_channel or any(cid in blocked_channels for cid in channel_ids)
 
         return not is_bad_channel
+
+    def _resolve_llm_configuration(self, message: discord.Message) -> tuple[str, str, ConfigValue, AsyncOpenAI, bool, bool]:
+        """Resolve the LLM provider, model, client, and associated flags based on configuration.
+
+        :param message: The Discord message that triggered the request.
+        :return: A tuple containing provider name, model name, provider config, OpenAI client,
+        accept_images flag, and accept_usernames flag.
+        :raises ValueError: If the model configuration is invalid.
+        :raises KeyError: If the provider is not found in the configuration.
+        :raises TypeError: If the provider configuration is not a dictionary.
+        """
+        provider_slash_model = self.config.chat.channel_models.get(message.channel.id, self.config.chat.default_model)
+        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        provider_config = self.config.llm.providers[provider]
+        openai_client = self.get_openai_client(provider_config)
+        accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
+        accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+
+        return provider, model, provider_config, openai_client, accept_images, accept_usernames
+
+    def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
+        """Replace dynamic placeholders in prompt strings."""
+        now = datetime.now(timezone.utc)
+        user_roles = getattr(msg.author, "roles", [])
+        user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
+        guild_emojis = getattr(msg.guild, "emojis", [])
+        guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
+
+        placeholders = {
+            "{date}": now.strftime("%B %d %Y"),
+            "{time}": now.strftime("%H:%M:%S %Z%z"),
+            "{bot_name}": self.safe_user.display_name,
+            "{bot_id}": str(self.safe_user.id),
+            "{model}": model,
+            "{provider}": provider,
+            "{user_display_name}": msg.author.display_name,
+            "{user_id}": str(msg.author.id),
+            "{user_roles}": user_roles_str,
+            "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
+            "{guild_description}": msg.guild.description if msg.guild else "",
+            "{guild_emojis}": guild_emojis_str,
+            "{channel_name}": getattr(msg.channel, "name", ""),
+            "{channel_topic}": getattr(msg.channel, "topic", ""),
+            "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
+        }
+        for key, value in placeholders.items():
+            text = text.replace(key, str(value))
+        return text.strip()
+
+    async def _prepare_message_history(self, message: discord.Message) -> list[discord.Message]:
+        """Fetch and initialize the message history for context building.
+
+        :param message: The triggering message.
+        :return: A list of initialized message nodes.
+        """
+        config = self.config
+        use_channel_context = config.chat.use_channel_context
+        if use_channel_context and config.chat.force_reply_chains and message.reference:
+            use_channel_context = False
+
+        logger.debug("Initializing message nodes...")
+        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context=use_channel_context)
+        await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
+
+        return message_history
 
     async def _fetch_history(self, message: discord.Message, max_messages: int, *, use_channel_context: bool) -> list[discord.Message]:
         """Retrieve message history either via channel history or reply chain.
@@ -311,95 +459,6 @@ class LLMCordBot(commands.Bot):
         else:
             return attachment, resp
 
-    def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
-        """Replace dynamic placeholders in prompt strings."""
-        now = datetime.now(timezone.utc)
-        user_roles = getattr(msg.author, "roles", [])
-        user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
-        guild_emojis = getattr(msg.guild, "emojis", [])
-        guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
-
-        placeholders = {
-            "{date}": now.strftime("%B %d %Y"),
-            "{time}": now.strftime("%H:%M:%S %Z%z"),
-            "{bot_name}": self.safe_user.display_name,
-            "{bot_id}": str(self.safe_user.id),
-            "{model}": model,
-            "{provider}": provider,
-            "{user_display_name}": msg.author.display_name,
-            "{user_id}": str(msg.author.id),
-            "{user_roles}": user_roles_str,
-            "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-            "{guild_description}": msg.guild.description if msg.guild else "",
-            "{guild_emojis}": guild_emojis_str,
-            "{channel_name}": getattr(msg.channel, "name", ""),
-            "{channel_topic}": getattr(msg.channel, "topic", ""),
-            "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
-        }
-        for key, value in placeholders.items():
-            text = text.replace(key, str(value))
-        return text.strip()
-
-    async def on_message(self, message: discord.Message) -> None:
-        """Event handler for new messages. Orchestrates the response flow.
-
-        :param message: The incoming Discord message to process.
-        """
-        if not self.safe_user or message.author.bot:
-            return
-
-        if not self._is_message_allowed(message):
-            logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
-            return
-
-        start_time = time.perf_counter()
-
-        # 1. Configuration Resolution
-        try:
-            provider, model, provider_config, openai_client, accept_images, accept_usernames = self._resolve_llm_configuration(message)
-        except (ValueError, KeyError, TypeError):
-            logger.exception("Failed to resolve LLM configuration!")
-            return
-
-        # 2. Context Building
-        # Generate system prompts early to calculate their token cost
-        pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
-        post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
-
-        system_token_count = 0
-        if pre_history:
-            system_token_count += len(TOKENIZER.encode(pre_history))
-        if post_history:
-            system_token_count += len(TOKENIZER.encode(post_history))
-
-        # Exceptions here will be handled by discord.py's global error handler
-        message_history = await self._prepare_message_history(message)
-
-        messages_payload, user_warnings = await self._build_messages_payload(
-            message_history=message_history,
-            system_token_count=system_token_count,
-            accept_images=accept_images,
-            accept_usernames=accept_usernames,
-        )
-
-        # 3. Prompt Insertion
-        if pre_history:
-            messages_payload.append({"role": "system", "content": pre_history})
-        if post_history:
-            messages_payload.insert(0, {"role": "system", "content": post_history})
-
-        elapsed_time = time.perf_counter() - start_time
-        logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
-
-        # 4. Parameter Preparation
-        chat_params = self._build_chat_params(model, messages_payload, provider, provider_config)
-
-        # 5. Generation
-        await self._generate_response(message, openai_client, chat_params, user_warnings)
-
-        # 6. Cleanup
-        self._prune_msg_nodes()
-
     async def _build_messages_payload(
         self,
         message_history: list[discord.Message],
@@ -505,41 +564,25 @@ class LLMCordBot(commands.Bot):
 
         return message_payload, msg_tokens, warning
 
-    def _resolve_llm_configuration(self, message: discord.Message) -> tuple[str, str, ConfigValue, AsyncOpenAI, bool, bool]:
-        """Resolve the LLM provider, model, client, and associated flags based on configuration.
+    def get_openai_client(self, provider_config: ConfigValue) -> AsyncOpenAI:
+        """Retrieve or initialize an OpenAI-compatible client for a specific provider.
 
-        :param message: The Discord message that triggered the request.
-        :return: A tuple containing provider name, model name, provider config, OpenAI client,
-        accept_images flag, and accept_usernames flag.
-        :raises ValueError: If the model configuration is invalid.
-        :raises KeyError: If the provider is not found in the configuration.
-        :raises TypeError: If the provider configuration is not a dictionary.
+        :param provider_config: The configuration dictionary for the provider.
+        :return: An AsyncOpenAI client instance.
         """
-        provider_slash_model = self.config.chat.channel_models.get(message.channel.id, self.config.chat.default_model)
-        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-        provider_config = self.config.llm.providers[provider]
-        openai_client = self.get_openai_client(provider_config)
-        accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-        accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+        if not isinstance(provider_config, dict):
+            error = f"Provider config must be a dict, got {type(provider_config)}"
+            raise TypeError(error)
 
-        return provider, model, provider_config, openai_client, accept_images, accept_usernames
+        base_url = provider_config["base_url"]
+        if base_url not in self.openai_clients:
+            self.openai_clients[base_url] = AsyncOpenAI(
+                base_url=base_url,
+                api_key=provider_config.get("api_key", "sk-no-key-required"),
+                http_client=self.httpx_client,
+            )
 
-    async def _prepare_message_history(self, message: discord.Message) -> list[discord.Message]:
-        """Fetch and initialize the message history for context building.
-
-        :param message: The triggering message.
-        :return: A list of initialized message nodes.
-        """
-        config = self.config
-        use_channel_context = config.chat.use_channel_context
-        if use_channel_context and config.chat.force_reply_chains and message.reference:
-            use_channel_context = False
-
-        logger.debug("Initializing message nodes...")
-        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context=use_channel_context)
-        await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
-
-        return message_history
+        return self.openai_clients[base_url]
 
     def _build_chat_params(
         self,
@@ -578,52 +621,6 @@ class LLMCordBot(commands.Bot):
             "extra_query": extra_query if isinstance(extra_query, dict) else None,
             "extra_body": extra_body,
         }
-
-    def _extract_chunk_content(self, chunk: ChatCompletionChunk) -> str:
-        """Extract text content from a streaming chunk.
-
-        Handles standard strings and multimodal list/object structures.
-
-        :param chunk: The chunk object from the API response.
-        :return: The extracted text content.
-        """
-        if not chunk.choices:
-            return ""
-
-        choice = chunk.choices[0]
-        delta_content = choice.delta.content or ""
-
-        # Handle potential list content (Mistral/Multimodal quirks)
-        if isinstance(delta_content, list):
-            logger.debug("Multimodal content detected...")
-            parts_text = ""
-            for part in delta_content:
-                if isinstance(part, str):
-                    parts_text += part
-                elif isinstance(part, dict):
-                    parts_text += part.get("text", "")
-                elif hasattr(part, "text"):
-                    parts_text += part.text
-            return parts_text
-
-        return str(delta_content)
-
-    def _process_final_text(self, text: str) -> str:
-        """Sanitize and process the final response text.
-
-        :param text: The raw response text.
-        :return: The processed text.
-        """
-        final_text = text
-        if self.config.chat.sanitize_response:
-            logger.debug("Sanitizing text...")
-            final_text = clean_response(final_text)
-
-        if "<think>" in final_text:
-            logger.debug("Removing <think> block...")
-            final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
-
-        return final_text
 
     async def _generate_response(
         self,
@@ -698,6 +695,35 @@ class LLMCordBot(commands.Bot):
         for warning in sorted(warnings):
             embed.add_field(name=warning, value="", inline=False)
         return embed
+
+    def _extract_chunk_content(self, chunk: ChatCompletionChunk) -> str:
+        """Extract text content from a streaming chunk.
+
+        Handles standard strings and multimodal list/object structures.
+
+        :param chunk: The chunk object from the API response.
+        :return: The extracted text content.
+        """
+        if not chunk.choices:
+            return ""
+
+        choice = chunk.choices[0]
+        delta_content = choice.delta.content or ""
+
+        # Handle potential list content (Mistral/Multimodal quirks)
+        if isinstance(delta_content, list):
+            logger.debug("Multimodal content detected...")
+            parts_text = ""
+            for part in delta_content:
+                if isinstance(part, str):
+                    parts_text += part
+                elif isinstance(part, dict):
+                    parts_text += part.get("text", "")
+                elif hasattr(part, "text"):
+                    parts_text += part.text
+            return parts_text
+
+        return str(delta_content)
 
     def _update_content_buffer(self, buffer: list[str], new_content: str, max_len: int) -> None:
         """Append content to the buffer, creating new chunks if max length is exceeded.
@@ -778,6 +804,23 @@ class LLMCordBot(commands.Bot):
             embed.description = final_text
             embed.colour = EMBED_COLOR_COMPLETE
             await msgs[-1].edit(embed=embed)
+
+    def _process_final_text(self, text: str) -> str:
+        """Sanitize and process the final response text.
+
+        :param text: The raw response text.
+        :return: The processed text.
+        """
+        final_text = text
+        if self.config.chat.sanitize_response:
+            logger.debug("Sanitizing text...")
+            final_text = clean_response(final_text)
+
+        if "<think>" in final_text:
+            logger.debug("Removing <think> block...")
+            final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
+
+        return final_text
 
     async def _send_response_node(
         self,
@@ -990,46 +1033,3 @@ class LLMCordBot(commands.Bot):
             return [Choice(name=key, value=key) for key in EDITABLE_SETTINGS if curr_str.lower() in key.lower()][:25]
 
         self.tree.add_command(config_group)
-
-
-def console_listener() -> None:
-    """Listen for console commands in a blocking loop.
-
-    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
-
-    :return: None
-    """
-    try:
-        while True:
-            command = input().strip().lower()
-            if command == "reload":
-                os._exit(2)
-            elif command in ("exit", "stop", "quit"):
-                os._exit(0)
-            else:
-                logger.warning("Unknown command: %s", command)
-    except EOFError:
-        pass
-
-
-async def main() -> None:
-    """Entry point for the bot application.
-
-    Initializes Discord intents, creates the bot instance, starts the console listener,
-    and runs the bot with the configured token.
-
-    :return: None
-    :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
-    """
-    intents = discord.Intents.default()
-    intents.message_content = True
-    activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
-
-    bot = LLMCordBot(intents=intents, activity=activity)
-    threading.Thread(target=console_listener, daemon=True).start()
-
-    try:
-        async with bot:
-            await bot.start(config_manager.config.discord.bot_token)
-    except KeyboardInterrupt:
-        pass
