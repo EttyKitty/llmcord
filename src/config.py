@@ -1,8 +1,12 @@
-import os
-from dataclasses import dataclass, field
-from typing import Any
+"""Configuration management module for the application."""
+
+import sys
+from dataclasses import dataclass, field, fields, is_dataclass
+from pathlib import Path
+from typing import TypeVar
 
 import yaml
+import yaml.representer
 
 from main import logger
 
@@ -18,12 +22,15 @@ EDITABLE_SETTINGS = (
     "chat.prefix_users",
 )
 
-CONFIG_DIR = "config"
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config-example.yaml")
-USER_CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
+CONFIG_DIR = Path("config")
+CONFIG_FILE = CONFIG_DIR / "config-example.yaml"
+USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
+
+ConfigValue = str | int | bool | float | list | dict | None
+T = TypeVar("T")
 
 
-def _str_presenter(dumper, data):
+def _str_presenter(dumper: yaml.representer.SafeRepresenter, data: str) -> yaml.ScalarNode:
     """Preserve multiline strings when dumping yaml.
 
     https://github.com/yaml/pyyaml/issues/240
@@ -42,6 +49,8 @@ yaml.representer.SafeRepresenter.add_representer(str, _str_presenter)
 
 @dataclass
 class ChatConfig:
+    """Configuration settings specific to chat functionality."""
+
     default_model: str = ""
     channel_models: dict[int, str] = field(default_factory=dict)
     use_plain_responses: bool = False
@@ -57,12 +66,16 @@ class ChatConfig:
 
 @dataclass
 class LLMConfig:
-    providers: dict[str, Any] = field(default_factory=dict)
-    models: dict[str, Any] = field(default_factory=dict)
+    """Configuration settings for LLM providers and models."""
+
+    providers: dict[str, ConfigValue] = field(default_factory=dict)
+    models: dict[str, ConfigValue] = field(default_factory=dict)
 
 
 @dataclass
 class PermissionGroup:
+    """Data structure for defining permission lists."""
+
     admin_ids: list[int] = field(default_factory=list)
     allowed_ids: list[int] = field(default_factory=list)
     blocked_ids: list[int] = field(default_factory=list)
@@ -70,6 +83,8 @@ class PermissionGroup:
 
 @dataclass
 class PermissionsConfig:
+    """Configuration settings for bot permissions."""
+
     users: PermissionGroup = field(default_factory=PermissionGroup)
     roles: PermissionGroup = field(default_factory=PermissionGroup)
     channels: PermissionGroup = field(default_factory=PermissionGroup)
@@ -77,6 +92,8 @@ class PermissionsConfig:
 
 @dataclass
 class DiscordSettings:
+    """Configuration settings for Discord connection and behavior."""
+
     bot_token: str = ""
     client_id: str = ""
     status_message: str = ""
@@ -86,12 +103,16 @@ class DiscordSettings:
 
 @dataclass
 class Prompts:
+    """Configuration storage for system prompts."""
+
     pre_history: str = ""
     post_history: str = ""
 
 
 @dataclass
 class RootConfig:
+    """Root configuration object holding all sub-configurations."""
+
     discord: DiscordSettings = field(default_factory=DiscordSettings)
     llm: LLMConfig = field(default_factory=LLMConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
@@ -99,7 +120,10 @@ class RootConfig:
 
 
 class ConfigManager:
+    """Manages loading, merging, and saving of application configuration."""
+
     def __init__(self) -> None:
+        """Initialize the ConfigManager and load the configuration."""
         self.config: RootConfig = RootConfig()
         self.load_config()
 
@@ -113,7 +137,6 @@ class ConfigManager:
         """
         replace_keys = replace_keys or set()
         for key, value in overrides.items():
-            # If this key should be replaced (not merged), or if it's not a dict merge scenario
             if key in replace_keys or not (isinstance(value, dict) and key in base and isinstance(base[key], dict)):
                 base[key] = value
             else:
@@ -121,22 +144,26 @@ class ConfigManager:
         return base
 
     def load_config(self) -> None:
+        """Load configuration from disk, apply overrides, and map to dataclasses."""
         # 1. Load Defaults
         raw_config: dict = {}
         try:
-            with open(CONFIG_FILE, encoding="utf-8") as f:
+            with CONFIG_FILE.open(encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
         except FileNotFoundError:
             logger.exception("config-example.yaml not found! Exiting...")
-            exit(1)
+            sys.exit(1)
+        except (OSError, yaml.YAMLError):
+            logger.exception("Error reading config-example.yaml")
+            sys.exit(1)
 
         # 2. Load User Overrides
-        if os.path.exists(USER_CONFIG_FILE):
+        if USER_CONFIG_FILE.exists():
             try:
-                with open(USER_CONFIG_FILE, encoding="utf-8") as f:
+                with USER_CONFIG_FILE.open(encoding="utf-8") as f:
                     user_overrides = yaml.safe_load(f) or {}
                 self.deep_merge(raw_config, user_overrides, replace_keys={"models"})
-            except Exception:
+            except (OSError, yaml.YAMLError):
                 logger.exception("Error loading config.yaml!")
 
         # 3. Map to Dataclass
@@ -146,56 +173,75 @@ class ConfigManager:
         if not self.config.chat.default_model and self.config.llm.models:
             self.config.chat.default_model = next(iter(self.config.llm.models))
 
-    def _map_to_dataclass(self, cls: Any, data: dict) -> Any:
-        if not isinstance(data, dict):
+    def _map_to_dataclass(self, cls: type[T], data: object) -> T:
+        """Recursively map a dictionary to a dataclass structure.
+
+        :param cls: The dataclass type to instantiate.
+        :param data: The dictionary data or raw value.
+        :return: An instance of `cls`.
+        """
+        if not is_dataclass(cls):
+            error = f"Type {cls} is not a dataclass"
+            raise TypeError(error)
+
+        if isinstance(data, cls):
             return data
 
-        field_types = {f.name: f.type for f in cls.__dataclass_fields__.values()}
+        if not isinstance(data, dict):
+            error = f"Expected dict for {cls.__name__}, got {type(data)}"
+            raise TypeError(error)
+
+        field_types = {f.name: f.type for f in fields(cls)}
+
         kwargs = {}
         for key, value in data.items():
             if key in field_types:
                 field_type = field_types[key]
-                if hasattr(field_type, "__dataclass_fields__"):
+                if isinstance(field_type, type) and is_dataclass(field_type):
                     kwargs[key] = self._map_to_dataclass(field_type, value)
                 else:
                     kwargs[key] = value
         return cls(**kwargs)
 
     def update_user_config(self, updates: dict) -> None:
-        """Read config.yaml, apply deep merge with updates, save to disk, and reload the in-memory config.
+        """Read config.yaml, apply deep merge with updates, save to disk, and reload.
 
         :param updates: Dictionary of configuration updates to merge.
         :return: None
         """
         current_user_config: dict = {}
-        if os.path.exists(USER_CONFIG_FILE):
+        if USER_CONFIG_FILE.exists():
             try:
-                with open(USER_CONFIG_FILE, encoding="utf-8") as f:
+                with USER_CONFIG_FILE.open(encoding="utf-8") as f:
                     current_user_config = yaml.safe_load(f) or {}
-            except Exception:
+            except (OSError, yaml.YAMLError):
                 logger.exception("Failed to read config.yaml!")
 
         self.deep_merge(current_user_config, updates)
 
         try:
-            with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
+            with USER_CONFIG_FILE.open("w", encoding="utf-8") as f:
                 yaml.dump(current_user_config, f, indent=2, sort_keys=False)
             self.load_config()
-        except Exception:
+        except (OSError, yaml.YAMLError):
             logger.exception("Failed to write config.yaml!")
 
-    def update_setting(self, path: str, value: Any) -> None:
+    def update_setting(self, path: str, value: ConfigValue) -> None:
         """Update a setting using dot notation (e.g. 'chat.sanitize_response').
 
         Converts the path to a nested dictionary and calls update_user_config.
+
+        :param path: The dot-notation path to the setting.
+        :param value: The value to set.
         """
         keys = path.split(".")
 
-        update_payload = value
+        update_payload: dict | ConfigValue = value
         for key in reversed(keys):
             update_payload = {key: update_payload}
 
-        self.update_user_config(update_payload)
+        if isinstance(update_payload, dict):
+            self.update_user_config(update_payload)
 
     def set_default_model(self, model: str) -> None:
         """Update the default model in config.yaml."""
@@ -208,9 +254,13 @@ class ConfigManager:
         """
         self.update_user_config({"chat": {"channel_models": {channel_id: model}}})
 
-    def get_setting_value(self, path: str) -> Any:
-        """Retrieve value from the loaded dataclass via dot notation."""
-        current = self.config
+    def get_setting_value(self, path: str) -> ConfigValue | object:
+        """Retrieve value from the loaded dataclass via dot notation.
+
+        :param path: The dot-notation path to the setting.
+        :return: The value of the setting.
+        """
+        current: object = self.config
         for key in path.split("."):
             current = getattr(current, key)
         return current

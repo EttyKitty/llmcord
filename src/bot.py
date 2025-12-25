@@ -1,3 +1,17 @@
+"""LLMCord Bot Main Module.
+
+This module contains the core implementation of the LLMCord Discord bot.
+It handles the bot's lifecycle, event processing, message validation,
+context construction, and interaction with various LLM providers using
+OpenAI-compatible APIs.
+
+Key Components:
+- LLMCordBot: The main bot class inheriting from discord.ext.commands.Bot.
+- Message Processing: Logic for fetching history, parsing attachments, and building prompts.
+- Response Generation: Streaming responses from LLMs to Discord messages.
+- Configuration Management: Slash commands for dynamic bot configuration.
+"""
+
 import asyncio
 import os
 import re
@@ -25,7 +39,7 @@ from openai.types.chat import (
 
 from main import logger
 
-from .config import EDITABLE_SETTINGS, RootConfig, config_manager
+from .config import EDITABLE_SETTINGS, ConfigValue, RootConfig, config_manager
 from .logger import request_logger
 from .utils import MsgNode, clean_response
 
@@ -64,6 +78,7 @@ class LLMCordBot(commands.Bot):
         if self.user is None:
             error = "Bot user not initialized!"
             raise RuntimeError(error)
+
         return self.user
 
     def __init__(self, intents: discord.Intents, activity: discord.CustomActivity) -> None:
@@ -73,6 +88,7 @@ class LLMCordBot(commands.Bot):
         :param activity: Custom activity status for the bot.
         """
         super().__init__(command_prefix="?", intents=intents, activity=activity)
+
         self.openai_clients: dict[str, AsyncOpenAI] = {}
         self.msg_nodes: dict[int, MsgNode] = {}
         self.last_task_time: float = 0.0
@@ -89,16 +105,22 @@ class LLMCordBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Set up internal discord.py hook for asynchronous setup."""
         await self.tree.sync()
+
         if client_id := self.config.discord.client_id:
             logger.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
+
         logger.info(f"Bot ready. Logged in as {self.safe_user}")
 
-    def get_openai_client(self, provider_config: dict[str, Any]) -> AsyncOpenAI:
+    def get_openai_client(self, provider_config: ConfigValue) -> AsyncOpenAI:
         """Retrieve or initialize an OpenAI-compatible client for a specific provider.
 
         :param provider_config: The configuration dictionary for the provider.
         :return: An AsyncOpenAI client instance.
         """
+        if not isinstance(provider_config, dict):
+            error = f"Provider config must be a dict, got {type(provider_config)}"
+            raise TypeError(error)
+
         base_url = provider_config["base_url"]
         if base_url not in self.openai_clients:
             self.openai_clients[base_url] = AsyncOpenAI(
@@ -106,6 +128,7 @@ class LLMCordBot(commands.Bot):
                 api_key=provider_config.get("api_key", "sk-no-key-required"),
                 http_client=self.httpx_client,
             )
+
         return self.openai_clients[base_url]
 
     def _is_message_allowed(self, msg: discord.Message) -> bool:
@@ -133,16 +156,7 @@ class LLMCordBot(commands.Bot):
         if is_bad_user:
             return False
 
-        channel_ids = set(
-            filter(
-                None,
-                (
-                    msg.channel.id,
-                    getattr(msg.channel, "parent_id", None),
-                    getattr(msg.channel, "category_id", None),
-                ),
-            ),
-        )
+        channel_ids = set(filter(None, (msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None))))
         allowed_channels = permissions.channels.allowed_ids
         blocked_channels = permissions.channels.blocked_ids
         allow_dms = self.config.discord.allow_dms
@@ -152,59 +166,81 @@ class LLMCordBot(commands.Bot):
 
         return not is_bad_channel
 
-    async def _fetch_history(self, message: discord.Message, max_messages: int, use_channel_context: bool) -> list[discord.Message]:
-        """Retrieve message message_history either via channel message_history or reply chain.
+    async def _fetch_history(self, message: discord.Message, max_messages: int, *, use_channel_context: bool) -> list[discord.Message]:
+        """Retrieve message history either via channel history or reply chain.
 
         :param message: The trigger message.
         :param max_messages: Maximum number of messages to fetch.
-        :param use_channel_context: Whether to use linear channel message_history.
+        :param use_channel_context: Whether to use linear channel history.
         :return: A list of Discord messages.
         """
+        logger.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
+
+        if use_channel_context:
+            return await self._fetch_channel_history(message, max_messages)
+        return await self._fetch_reply_chain_history(message, max_messages)
+
+    async def _fetch_channel_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
+        """Fetch linear message history from the channel."""
+        message_history = [message]
+        message_history.extend([msg async for msg in message.channel.history(limit=max_messages - 1, before=message)])
+        return message_history[:max_messages]
+
+    async def _fetch_reply_chain_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
+        """Fetch message history by traversing the reply chain."""
         message_history: list[discord.Message] = []
         history_ids: set[int] = set()
         current_msg: discord.Message | None = message
 
-        logger.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
-
-        if use_channel_context:
-            message_history = [message]
-            async for msg in message.channel.history(limit=max_messages - 1, before=message):
-                message_history.append(msg)
-            return message_history[:max_messages]
         while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
             history_ids.add(current_msg.id)
             message_history.append(current_msg)
-            next_msg = None
 
-            if current_msg.reference and current_msg.reference.message_id:
-                try:
-                    next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            current_msg = await self._resolve_next_message(current_msg)
 
-                    if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
-                        next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
-
-                    current_msg = next_msg
-                except (discord.NotFound, discord.HTTPException):
-                    logger.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
-                    break
-
-            elif self.safe_user.mention not in current_msg.content:
-                async for prev in current_msg.channel.history(before=current_msg, limit=1):
-                    is_dm = current_msg.channel.type == discord.ChannelType.private
-                    allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-                    is_valid_type = prev.type in allowed_types
-
-                    is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
-
-                    if is_valid_type and is_expected_author:
-                        next_msg = prev
-                    break
-
-            if next_msg:
-                current_msg = next_msg
-            else:
-                break
         return message_history
+
+    async def _resolve_next_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Determine the next message in the reply chain."""
+        if current_msg.reference and current_msg.reference.message_id:
+            return await self._fetch_referenced_message(current_msg)
+
+        if self.safe_user.mention not in current_msg.content:
+            return await self._fetch_previous_message(current_msg)
+
+        return None
+
+    async def _fetch_referenced_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Fetch the message referenced by the current message."""
+        if not current_msg.reference or not current_msg.reference.message_id:
+            return None
+
+        try:
+            next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+        except (discord.NotFound, discord.HTTPException):
+            logger.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
+            return None
+        else:
+            if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
+                next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
+
+            return next_msg
+
+    async def _fetch_previous_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Fetch the immediately preceding message in the channel if it matches criteria."""
+        async for prev in current_msg.channel.history(before=current_msg, limit=1):
+            is_dm = current_msg.channel.type == discord.ChannelType.private
+            allowed_types = (discord.MessageType.default, discord.MessageType.reply)
+
+            if prev.type not in allowed_types:
+                continue
+
+            is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
+
+            if is_expected_author:
+                return prev
+
+        return None
 
     async def _init_msg_node(self, msg: discord.Message) -> None:
         """Initialize a MsgNode for a message, processing attachments and text sources.
@@ -268,10 +304,11 @@ class LLMCordBot(commands.Bot):
         try:
             resp = await self.httpx_client.get(attachment.url)
             resp.raise_for_status()
-            return attachment, resp
         except (httpx.HTTPError, httpx.TimeoutException) as e:
             logger.warning(f"Failed to download attachment {attachment.filename} ({attachment.url}): {e}")
             return attachment, None
+        else:
+            return attachment, resp
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
         """Replace dynamic placeholders in prompt strings."""
@@ -310,44 +347,94 @@ class LLMCordBot(commands.Bot):
         if not self.safe_user or message.author.bot:
             return
 
-        is_dm = message.channel.type == discord.ChannelType.private
-        if not is_dm and self.safe_user not in message.mentions:
-            return
-
         if not self._is_message_allowed(message):
             logger.info(f"Message blocked. User: {message.author.name} ID: {message.author.id}")
             return
 
         start_time = time.perf_counter()
-        config = self.config
 
         # 1. Configuration Resolution
-        provider_slash_model = config.chat.channel_models.get(message.channel.id, config.chat.default_model)
         try:
-            provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-            provider_config = config.llm.providers[provider]
-            openai_client = self.get_openai_client(provider_config)
-        except (ValueError, KeyError):
-            logger.exception(f"Failed to load provider configuration for {provider_slash_model}!")
+            provider, model, provider_config, openai_client, accept_images, accept_usernames = self._resolve_llm_configuration(message)
+        except (ValueError, KeyError, TypeError) as e:
+            logger.exception(f"Failed to resolve LLM configuration: {e}")
             return
 
+        # 2. Context Building
+        # Exceptions here will be handled by discord.py's global error handler
+        message_history = await self._prepare_message_history(message)
+        messages_payload, user_warnings = await self._build_message_payload(message_history, message, model, provider, accept_images, accept_usernames)
+
+        # 3. Prompt Insertion
+        pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
+        post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
+
+        if pre_history:
+            messages_payload.append({"role": "system", "content": pre_history})
+        if post_history:
+            messages_payload.insert(0, {"role": "system", "content": post_history})
+
+        elapsed_time = time.perf_counter() - start_time
+        logger.info(f"Request prepared in {elapsed_time:.4f} seconds!")
+
+        # 4. Generation
+        await self._generate_response(message, openai_client, provider, model, messages_payload[::-1], provider_config, user_warnings)
+
+        # 5. Cleanup
+        self._prune_msg_nodes()
+
+    def _resolve_llm_configuration(self, message: discord.Message) -> tuple[str, str, ConfigValue, AsyncOpenAI, bool, bool]:
+        """Resolve the LLM provider, model, client, and associated flags based on configuration.
+
+        :param message: The Discord message that triggered the request.
+        :return: A tuple containing provider name, model name, provider config, OpenAI client,
+        accept_images flag, and accept_usernames flag.
+        :raises ValueError: If the model configuration is invalid.
+        :raises KeyError: If the provider is not found in the configuration.
+        :raises TypeError: If the provider configuration is not a dictionary.
+        """
+        provider_slash_model = self.config.chat.channel_models.get(message.channel.id, self.config.chat.default_model)
+        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        provider_config = self.config.llm.providers[provider]
+        openai_client = self.get_openai_client(provider_config)
         accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
         accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
-        # 2. Context Building
+        return provider, model, provider_config, openai_client, accept_images, accept_usernames
+
+    async def _prepare_message_history(self, message: discord.Message) -> list[discord.Message]:
+        """Fetch and initialize the message history for context building.
+
+        :param message: The triggering message.
+        :return: A list of initialized message nodes.
+        """
+        config = self.config
         use_channel_context = config.chat.use_channel_context
         if use_channel_context and config.chat.force_reply_chains and message.reference:
             use_channel_context = False
 
         logger.debug("Initializing message nodes...")
-        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context)
+        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context=use_channel_context)
         await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
 
-        logger.debug("Building context...")
+        return message_history
+
+    async def _build_message_payload(self, message_history: list[discord.Message], message: discord.Message, model: str, provider: str, accept_images: bool, accept_usernames: bool) -> tuple[list[ChatCompletionMessageParam], set[str]]:
+        """Build the message payload for the LLM, including context and warnings.
+
+        :param message_history: The history of messages to process.
+        :param message: The triggering message.
+        :param model: The model name being used.
+        :param provider: The LLM provider name.
+        :param accept_images: Whether the model supports image inputs.
+        :param accept_usernames: Whether the provider supports usernames in messages.
+        :return: A tuple containing the list of messages for the payload and a set of user warnings.
+        """
         messages_payload: list[ChatCompletionMessageParam] = []
         user_warnings: set[str] = set()
         total_tokens = 0
         total_images = 0
+        config = self.config
 
         logger.debug("Replacing placeholders...")
         pre_history = self._replace_placeholders(config.prompts.pre_history, message, model, provider)
@@ -412,21 +499,7 @@ class LLMCordBot(commands.Bot):
             if len(node.text or "") > config.chat.max_text:
                 user_warnings.add(f"⚠️ Max {config.chat.max_text:,} characters per message")
         logger.debug(f"Context ready. Messages: {len(messages_payload)}. Images: {total_images}")
-
-        logger.debug("Inserting prompts...")
-        if pre_history:
-            messages_payload.append({"role": "system", "content": pre_history})
-        if post_history:
-            messages_payload.insert(0, {"role": "system", "content": post_history})
-
-        elapsed_time = time.perf_counter() - start_time
-        logger.info(f"Request prepared in {elapsed_time:.4f} seconds!")
-
-        # 4. Generation
-        await self._generate_response(message, openai_client, provider, model, messages_payload[::-1], provider_config, user_warnings)
-
-        # 5. Cleanup
-        self._prune_msg_nodes()
+        return messages_payload, user_warnings
 
     async def _generate_response(
         self,
@@ -435,7 +508,7 @@ class LLMCordBot(commands.Bot):
         provider: str,
         model: str,
         messages: Sequence[ChatCompletionMessageParam],
-        provider_config: dict[str, Any],
+        provider_config: ConfigValue,
         warnings: set[str],
     ) -> None:
         """Handle the streaming of the LLM response back to Discord."""
@@ -454,10 +527,17 @@ class LLMCordBot(commands.Bot):
             extra_query: NotRequired[dict[str, object] | None]
             extra_body: NotRequired[dict[str, object] | None]
 
-        model_overrides: dict[str, object] = self.config.llm.models.get(f"{provider}/{model}") or {}
+        if not isinstance(provider_config, dict):
+            error = f"Provider config must be a dict, got {type(provider_config)}"
+            raise TypeError(error)
+
+        raw_overrides = self.config.llm.models.get(f"{provider}/{model}")
+        model_overrides: dict[str, object] = raw_overrides if isinstance(raw_overrides, dict) else {}
         extra_headers = provider_config.get("extra_headers")
         extra_query = provider_config.get("extra_query")
-        extra_body: dict[str, object] = (provider_config.get("extra_body") or {}) | model_overrides
+        raw_extra_body = provider_config.get("extra_body")
+        extra_body_base = raw_extra_body if isinstance(raw_extra_body, dict) else {}
+        extra_body: dict[str, object] = extra_body_base | model_overrides
 
         openai_params: ChatParams = {
             "model": model,
