@@ -1,7 +1,9 @@
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
+from openai.types.chat import ChatCompletionContentPartImageParam
+
 
 import discord
 
@@ -24,7 +26,7 @@ TYPOGRAPHY_MAP = str.maketrans(
 @dataclass
 class MsgNode:
     text: Optional[str] = None
-    images: list[dict[str, Any]] = field(default_factory=list)
+    images: list[ChatCompletionContentPartImageParam] = field(default_factory=list)
 
     role: Literal["user", "assistant"] = "assistant"
     user_id: Optional[int] = None
