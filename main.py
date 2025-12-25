@@ -27,7 +27,7 @@ if __name__ == "__main__":
             logger.info("Bot stopped by user.")
             break
 
-        except Exception as e:
+        except Exception:
             run_duration = time.time() - start_time
 
             # If the bot survived longer than the threshold, it's not a boot loop.
@@ -36,20 +36,20 @@ if __name__ == "__main__":
                 retry_count = 0
 
             retry_count += 1
-            logger.error(f"Bot crashed with error: {e}")
+            logger.exception("Bot crashed!")
 
             if retry_count > MAX_RETRIES:
-                logger.warning(f"Maximum retry limit ({MAX_RETRIES}) reached.")
+                logger.warning("Maximum retry limit (%d) reached.", MAX_RETRIES)
                 print("Press Enter to restart...")
                 try:
                     input()
                 except EOFError:
                     # Fallback for environments without interactive input (e.g. Docker)
-                    logger.info(f"No input detected. Waiting {STABLE_THRESHOLD} seconds...")
+                    logger.info("No input detected. Waiting %d seconds...", STABLE_THRESHOLD)
                     time.sleep(STABLE_THRESHOLD)
 
                 # Reset counter after manual intervention
                 retry_count = 0
             else:
-                logger.info(f"Restarting in {RESTART_DELAY} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
+                logger.info("Restarting in %d seconds... (Attempt %d/%d)", RESTART_DELAY, retry_count, MAX_RETRIES)
                 time.sleep(RESTART_DELAY)

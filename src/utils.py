@@ -1,9 +1,10 @@
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Literal
 
 import discord
+from openai.types.chat import ChatCompletionContentPartImageParam
 
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
@@ -13,27 +14,27 @@ TYPOGRAPHY_MAP = str.maketrans(
     {
         "“": '"',
         "”": '"',
-        "‘": "'",
+        "‘": "'",  # noqa: RUF001
         "’": "'",
         "—": "-",
         "…": "...",
-    }
+    },
 )
 
 
 @dataclass
 class MsgNode:
-    text: Optional[str] = None
-    images: list[dict[str, Any]] = field(default_factory=list)
+    text: str | None = None
+    images: list[ChatCompletionContentPartImageParam] = field(default_factory=list)
 
     role: Literal["user", "assistant"] = "assistant"
-    user_id: Optional[int] = None
-    user_display_name: Optional[str] = None
+    user_id: int | None = None
+    user_display_name: str | None = None
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
 
-    parent_msg: Optional[discord.Message] = None
+    parent_msg: discord.Message | None = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

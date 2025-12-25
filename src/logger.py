@@ -1,8 +1,10 @@
 import json
 import logging
 import os
-from datetime import datetime
-from typing import Any
+from collections.abc import Mapping
+from datetime import datetime, timezone
+
+from main import logger
 
 # --- Fix for Windows Colors ---
 if os.name == "nt":
@@ -10,10 +12,7 @@ if os.name == "nt":
 
 
 class RequestLogger:
-    """
-    Handles logging of LLM request payloads to a file.
-    Outputs pretty-printed JSON for readability.
-    """
+    """Handles logging of LLM request payloads to a file. Outputs pretty-printed JSON for readability."""
 
     def __init__(self, filename: str = "logs/llm_requests.json"):
         self.logger = logging.getLogger("request_logger")
@@ -27,30 +26,35 @@ class RequestLogger:
         handler.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(handler)
 
-    def log(self, payload: dict[str, Any]) -> None:
-        """
-        Sanitizes and logs the request payload as a pretty-printed JSON object.
+    def log(self, payload: Mapping[str, object]) -> None:
+        """Sanitize and log the request payload as a pretty-printed JSON object.
+
+        :param payload: The request payload dictionary to log.
+        :return: None
         """
         try:
             # Create a shallow copy
-            log_entry = payload.copy()
+            log_entry: dict[str, object] = dict(payload)
 
             # Inject timestamp for context
-            log_entry["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry["_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             # Redact sensitive headers
-            if "extra_headers" in log_entry and log_entry["extra_headers"]:
-                headers = log_entry["extra_headers"].copy()
-                for key in headers:
+            extra_headers = log_entry.get("extra_headers")
+
+            if isinstance(extra_headers, dict):
+                headers_copy: dict[str, object] = dict(extra_headers)
+
+                for key in list(headers_copy.keys()):
                     if any(sensitive in key.lower() for sensitive in ("api", "auth", "key", "token")):
-                        headers[key] = "REDACTED"
-                log_entry["extra_headers"] = headers
+                        headers_copy[key] = "REDACTED"
+
+                log_entry["extra_headers"] = headers_copy
 
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
-
             self.logger.info(log_message)
-        except Exception as e:
-            logging.error(f"Failed to log LLM request: {e}")
+        except Exception:
+            logger.exception("Failed to log LLM request!")
 
 
 class ColoredFormatter(logging.Formatter):
@@ -82,7 +86,7 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging():
-    """Configures the root logger and silences noisy libraries."""
+    """Configure the root logger and silences noisy libraries."""
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(ColoredFormatter())
 
