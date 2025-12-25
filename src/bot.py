@@ -5,8 +5,9 @@ import re
 import threading
 import time
 from base64 import b64encode
-from datetime import datetime
-from typing import Any, Dict, List, Literal, NotRequired, Optional, Sequence, Set, Tuple, TypedDict
+from collections.abc import Sequence
+from datetime import datetime, timezone
+from typing import Any, Literal, NotRequired, Optional, TypedDict
 
 import discord
 import httpx
@@ -53,13 +54,13 @@ class LLMCordBot(commands.Bot):
     @property
     def safe_user(self) -> discord.ClientUser:
         if self.user is None:
-            raise LookupError("Bot user not initialized")
+            raise RuntimeError("Bot user not initialized!")
         return self.user
 
     def __init__(self, intents: discord.Intents, activity: discord.CustomActivity) -> None:
         super().__init__(command_prefix="?", intents=intents, activity=activity)
-        self.openai_clients: Dict[str, AsyncOpenAI] = {}
-        self.msg_nodes: Dict[int, MsgNode] = {}
+        self.openai_clients: dict[str, AsyncOpenAI] = {}
+        self.msg_nodes: dict[int, MsgNode] = {}
         self.last_task_time: float = 0.0
         self.httpx_client = httpx.AsyncClient()
 
@@ -75,7 +76,7 @@ class LLMCordBot(commands.Bot):
             logging.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
         logging.info(f"Bot ready. Logged in as {self.safe_user}")
 
-    def get_openai_client(self, provider_config: Dict[str, Any]) -> AsyncOpenAI:
+    def get_openai_client(self, provider_config: dict[str, Any]) -> AsyncOpenAI:
         """
         Retrieves or initializes an OpenAI-compatible client for a specific provider.
 
@@ -136,7 +137,7 @@ class LLMCordBot(commands.Bot):
 
         return not is_bad_channel
 
-    async def _fetch_history(self, message: discord.Message, max_messages: int, use_channel_context: bool) -> List[discord.Message]:
+    async def _fetch_history(self, message: discord.Message, max_messages: int, use_channel_context: bool) -> list[discord.Message]:
         """
         Retrieves message message_history either via channel message_history or reply chain.
 
@@ -146,8 +147,8 @@ class LLMCordBot(commands.Bot):
         :return: A list of Discord messages.
         """
 
-        message_history: List[discord.Message] = []
-        history_ids: Set[int] = set()
+        message_history: list[discord.Message] = []
+        history_ids: set[int] = set()
         current_msg: Optional[discord.Message] = message
 
         logging.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
@@ -244,7 +245,7 @@ class LLMCordBot(commands.Bot):
         """Checks if attachment type is supported."""
         return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
 
-    async def _download_attachment(self, attachment: discord.Attachment) -> Tuple[discord.Attachment, httpx.Response]:
+    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response]:
         """Downloads an attachment."""
         resp = await self.httpx_client.get(attachment.url)
         return attachment, resp
@@ -253,7 +254,8 @@ class LLMCordBot(commands.Bot):
         """
         Replaces dynamic placeholders in prompt strings.
         """
-        now = datetime.now().astimezone()
+
+        now = datetime.now(timezone.utc)
         user_roles = getattr(msg.author, "roles", [])
         user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
         guild_emojis = getattr(msg.guild, "emojis", [])
@@ -304,8 +306,8 @@ class LLMCordBot(commands.Bot):
             provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
             provider_config = config.llm.providers[provider]
             openai_client = self.get_openai_client(provider_config)
-        except Exception as e:
-            logging.error(f"Failed to load provider configuration for {provider_slash_model}: {e}")
+        except (ValueError, KeyError) as e:
+            logging.exception(f"Failed to load provider configuration for {provider_slash_model}!\n{e}")
             return
 
         accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
@@ -384,8 +386,7 @@ class LLMCordBot(commands.Bot):
                         user_payload["name"] = sanitized_name or str(node.user_id)
                     messages_payload.append(user_payload)
                 elif node.role == "assistant":
-                    assistant_text = formatted_text if isinstance(content, str) else formatted_text
-                    messages_payload.append({"role": "assistant", "content": assistant_text})
+                    messages_payload.append({"role": "assistant", "content": formatted_text})
 
             if len(node.text or "") > config.chat.max_text:
                 user_warnings.add(f"⚠️ Max {config.chat.max_text:,} characters per message")
@@ -401,7 +402,7 @@ class LLMCordBot(commands.Bot):
         logging.info(f"Request prepared in {elapsed_time:.4f} seconds!")
 
         # 4. Generation
-        await self._generate_response(message, openai_client, model, messages_payload[::-1], provider_config, user_warnings)
+        await self._generate_response(message, openai_client, provider, model, messages_payload[::-1], provider_config, user_warnings)
 
         # 5. Cleanup
         self._prune_msg_nodes()
@@ -410,10 +411,11 @@ class LLMCordBot(commands.Bot):
         self,
         trigger_msg: discord.Message,
         client: AsyncOpenAI,
+        provider: str,
         model: str,
         messages: Sequence[ChatCompletionMessageParam],
-        provider_config: Dict[str, Any],
-        warnings: Set[str],
+        provider_config: dict[str, Any],
+        warnings: set[str],
     ) -> None:
         """
         Handles the streaming of the LLM response back to Discord.
@@ -423,8 +425,8 @@ class LLMCordBot(commands.Bot):
 
         use_plain = self.config.chat.use_plain_responses
         max_message_length = 4000 if use_plain else (4096 - len(STREAMING_INDICATOR))
-        response_msgs: List[discord.Message] = []
-        response_contents: List[str] = []
+        response_msgs: list[discord.Message] = []
+        response_contents: list[str] = []
 
         class ChatParams(TypedDict):
             model: str
@@ -434,7 +436,7 @@ class LLMCordBot(commands.Bot):
             extra_query: NotRequired[dict[str, object] | None]
             extra_body: NotRequired[dict[str, object] | None]
 
-        model_overrides: dict[str, object] = self.config.llm.models.get(f"{provider_config['base_url']}/{model}") or {}
+        model_overrides: dict[str, object] = self.config.llm.models.get(f"{provider}/{model}") or {}
         extra_headers = provider_config.get("extra_headers")
         extra_query = provider_config.get("extra_query")
         extra_body: dict[str, object] = (provider_config.get("extra_body") or {}) | model_overrides
@@ -489,8 +491,9 @@ class LLMCordBot(commands.Bot):
                     # Handle potential list content (Mistral/Multimodal quirks)
                     if isinstance(delta_content, list):
                         logging.debug("Multimodal content detected...")
+                        content_parts = delta_content
                         delta_content = ""
-                        for part in delta_content:
+                        for part in content_parts:
                             if isinstance(part, str):
                                 delta_content += part
                             elif isinstance(part, dict):
@@ -587,7 +590,7 @@ class LLMCordBot(commands.Bot):
             await interaction.response.send_message(f"[Default model set to `{model}`.]")
 
         @config_model.autocomplete("model")
-        async def model_autocomplete(interaction: discord.Interaction, current: str) -> List[Choice[str]]:
+        async def model_autocomplete(interaction: discord.Interaction, current: str) -> list[Choice[str]]:
             default_model = self.config.chat.default_model
             models = self.config.llm.models
 

@@ -1,8 +1,8 @@
 import json
 import logging
 import os
-from datetime import datetime
-from typing import Mapping
+from collections.abc import Mapping
+from datetime import datetime, timezone
 
 # --- Fix for Windows Colors ---
 if os.name == "nt":
@@ -36,7 +36,7 @@ class RequestLogger:
             log_entry: dict[str, object] = dict(payload)
 
             # Inject timestamp for context
-            log_entry["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry["_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             # Redact sensitive headers
             extra_headers = log_entry.get("extra_headers")

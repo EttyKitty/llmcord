@@ -32,7 +32,7 @@ discord:
       blocked_ids: []
 
 chat:
-  default_model: {}
+  default_model: ""
   channel_models: {}
 
   # The maximum amount of text allowed in a single message, including text from file attachments.
