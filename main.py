@@ -39,17 +39,17 @@ if __name__ == "__main__":
             logger.exception("Bot crashed!")
 
             if retry_count > MAX_RETRIES:
-                logger.warning("Maximum retry limit ({MAX_RETRIES}) reached.")
+                logger.warning("Maximum retry limit (%d) reached.", MAX_RETRIES)
                 print("Press Enter to restart...")
                 try:
                     input()
                 except EOFError:
                     # Fallback for environments without interactive input (e.g. Docker)
-                    logger.info("No input detected. Waiting {STABLE_THRESHOLD} seconds...")
+                    logger.info("No input detected. Waiting %d seconds...", STABLE_THRESHOLD)
                     time.sleep(STABLE_THRESHOLD)
 
                 # Reset counter after manual intervention
                 retry_count = 0
             else:
-                logger.info("Restarting in {RESTART_DELAY} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
+                logger.info("Restarting in %d seconds... (Attempt %d/%d)", RESTART_DELAY, retry_count, MAX_RETRIES)
                 time.sleep(RESTART_DELAY)

@@ -4,6 +4,8 @@ import os
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
+from main import logger
+
 # --- Fix for Windows Colors ---
 if os.name == "nt":
     os.system("")  # This simple hack enables ANSI support in Windows CMD
@@ -25,7 +27,11 @@ class RequestLogger:
         self.logger.addHandler(handler)
 
     def log(self, payload: Mapping[str, object]) -> None:
-        """Sanitizes and logs the request payload as a pretty-printed JSON object."""
+        """Sanitize and log the request payload as a pretty-printed JSON object.
+
+        :param payload: The request payload dictionary to log.
+        :return: None
+        """
         try:
             # Create a shallow copy
             log_entry: dict[str, object] = dict(payload)
@@ -48,7 +54,7 @@ class RequestLogger:
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
         except Exception:
-            logging.exception("Failed to log LLM request!")
+            logger.exception("Failed to log LLM request!")
 
 
 class ColoredFormatter(logging.Formatter):
@@ -80,7 +86,7 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging():
-    """Configures the root logger and silences noisy libraries."""
+    """Configure the root logger and silences noisy libraries."""
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(ColoredFormatter())
 

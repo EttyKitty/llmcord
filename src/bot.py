@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import re
 import threading
@@ -24,6 +23,8 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
+from main import logger
+
 from .config import EDITABLE_SETTINGS, RootConfig, config_manager
 from .logger import request_logger
 from .utils import MsgNode, clean_response
@@ -42,21 +43,35 @@ TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 
 class LLMCordBot(commands.Bot):
-    """The main bot class for llmcord, encapsulating state and logic.
-    """
+    """The main bot class for llmcord, encapsulating state and logic."""
 
     @property
     def config(self) -> RootConfig:
+        """Get the current configuration.
+
+        :return: The root configuration object.
+        """
         return config_manager.config
 
     # I'm too stupid to find a different solution to strict type checking in local scopes
     @property
     def safe_user(self) -> discord.ClientUser:
+        """Get the bot user, raising an error if not initialized.
+
+        :return: The bot's ClientUser.
+        :raises RuntimeError: If the bot user is not yet initialized.
+        """
         if self.user is None:
-            raise RuntimeError("Bot user not initialized!")
+            error = "Bot user not initialized!"
+            raise RuntimeError(error)
         return self.user
 
     def __init__(self, intents: discord.Intents, activity: discord.CustomActivity) -> None:
+        """Initialize the LLMCordBot.
+
+        :param intents: Discord intents configuration.
+        :param activity: Custom activity status for the bot.
+        """
         super().__init__(command_prefix="?", intents=intents, activity=activity)
         self.openai_clients: dict[str, AsyncOpenAI] = {}
         self.msg_nodes: dict[int, MsgNode] = {}
@@ -75,8 +90,8 @@ class LLMCordBot(commands.Bot):
         """Set up internal discord.py hook for asynchronous setup."""
         await self.tree.sync()
         if client_id := self.config.discord.client_id:
-            logging.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
-        logging.info(f"Bot ready. Logged in as {self.safe_user}")
+            logger.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
+        logger.info(f"Bot ready. Logged in as {self.safe_user}")
 
     def get_openai_client(self, provider_config: dict[str, Any]) -> AsyncOpenAI:
         """Retrieve or initialize an OpenAI-compatible client for a specific provider.
@@ -149,7 +164,7 @@ class LLMCordBot(commands.Bot):
         history_ids: set[int] = set()
         current_msg: discord.Message | None = message
 
-        logging.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
+        logger.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
 
         if use_channel_context:
             message_history = [message]
@@ -170,7 +185,7 @@ class LLMCordBot(commands.Bot):
 
                     current_msg = next_msg
                 except (discord.NotFound, discord.HTTPException):
-                    logging.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
+                    logger.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
                     break
 
             elif self.safe_user.mention not in current_msg.content:
@@ -255,7 +270,7 @@ class LLMCordBot(commands.Bot):
             resp.raise_for_status()
             return attachment, resp
         except (httpx.HTTPError, httpx.TimeoutException) as e:
-            logging.warning(f"Failed to download attachment {attachment.filename} ({attachment.url}): {e}")
+            logger.warning(f"Failed to download attachment {attachment.filename} ({attachment.url}): {e}")
             return attachment, None
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
@@ -300,7 +315,7 @@ class LLMCordBot(commands.Bot):
             return
 
         if not self._is_message_allowed(message):
-            logging.info(f"Message blocked. User: {message.author.name} ID: {message.author.id}")
+            logger.info(f"Message blocked. User: {message.author.name} ID: {message.author.id}")
             return
 
         start_time = time.perf_counter()
@@ -313,7 +328,7 @@ class LLMCordBot(commands.Bot):
             provider_config = config.llm.providers[provider]
             openai_client = self.get_openai_client(provider_config)
         except (ValueError, KeyError):
-            logging.exception(f"Failed to load provider configuration for {provider_slash_model}!")
+            logger.exception(f"Failed to load provider configuration for {provider_slash_model}!")
             return
 
         accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
@@ -324,17 +339,17 @@ class LLMCordBot(commands.Bot):
         if use_channel_context and config.chat.force_reply_chains and message.reference:
             use_channel_context = False
 
-        logging.debug("Initializing message nodes...")
+        logger.debug("Initializing message nodes...")
         message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context)
         await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
 
-        logging.debug("Building context...")
+        logger.debug("Building context...")
         messages_payload: list[ChatCompletionMessageParam] = []
         user_warnings: set[str] = set()
         total_tokens = 0
         total_images = 0
 
-        logging.debug("Replacing placeholders...")
+        logger.debug("Replacing placeholders...")
         pre_history = self._replace_placeholders(config.prompts.pre_history, message, model, provider)
         post_history = self._replace_placeholders(config.prompts.post_history, message, model, provider)
         if pre_history:
@@ -344,13 +359,13 @@ class LLMCordBot(commands.Bot):
 
         for msg in message_history:
             if len(messages_payload) >= config.chat.max_messages:
-                logging.debug(f"Message limit reached, breaking... ({config.chat.max_messages})")
+                logger.debug(f"Message limit reached, breaking... ({config.chat.max_messages})")
                 break
 
             node = self.msg_nodes[msg.id]
 
             if node.text is None:
-                logging.debug("Empty message found, skipping...")
+                logger.debug("Empty message found, skipping...")
                 continue
 
             formatted_text = node.text[: config.chat.max_text]
@@ -396,16 +411,16 @@ class LLMCordBot(commands.Bot):
 
             if len(node.text or "") > config.chat.max_text:
                 user_warnings.add(f"⚠️ Max {config.chat.max_text:,} characters per message")
-        logging.debug(f"Context ready. Messages: {len(messages_payload)}. Images: {total_images}")
+        logger.debug(f"Context ready. Messages: {len(messages_payload)}. Images: {total_images}")
 
-        logging.debug("Inserting prompts...")
+        logger.debug("Inserting prompts...")
         if pre_history:
             messages_payload.append({"role": "system", "content": pre_history})
         if post_history:
             messages_payload.insert(0, {"role": "system", "content": post_history})
 
         elapsed_time = time.perf_counter() - start_time
-        logging.info(f"Request prepared in {elapsed_time:.4f} seconds!")
+        logger.info(f"Request prepared in {elapsed_time:.4f} seconds!")
 
         # 4. Generation
         await self._generate_response(message, openai_client, provider, model, messages_payload[::-1], provider_config, user_warnings)
@@ -453,7 +468,7 @@ class LLMCordBot(commands.Bot):
             "extra_body": extra_body,
         }
 
-        logging.debug("Logging the request...")
+        logger.debug("Logging the request...")
         request_logger.log(openai_params)
 
         embed = None if use_plain else discord.Embed()
@@ -483,7 +498,7 @@ class LLMCordBot(commands.Bot):
 
                 async for chunk in await client.chat.completions.create(**openai_params):
                     if not first_chunk_received:
-                        logging.debug("Stream started...")
+                        logger.debug("Stream started...")
                         first_chunk_received = True
 
                     if not chunk.choices:
@@ -493,7 +508,7 @@ class LLMCordBot(commands.Bot):
 
                     # Handle potential list content (Mistral/Multimodal quirks)
                     if isinstance(delta_content, list):
-                        logging.debug("Multimodal content detected...")
+                        logger.debug("Multimodal content detected...")
                         content_parts = delta_content
                         delta_content = ""
                         for part in content_parts:
@@ -515,7 +530,7 @@ class LLMCordBot(commands.Bot):
 
                     finish_reason = choice.finish_reason
                     if finish_reason is not None:
-                        logging.debug(f"Stream finished. Reason: {finish_reason}")
+                        logger.debug(f"Stream finished. Reason: {finish_reason}")
 
                     if embed:
                         now_ts = datetime.now(timezone.utc).timestamp()
@@ -538,11 +553,11 @@ class LLMCordBot(commands.Bot):
                 final_text = "".join(response_contents)
 
                 if self.config.chat.sanitize_response:
-                    logging.debug("Sanitizing text...")
+                    logger.debug("Sanitizing text...")
                     final_text = clean_response(final_text)
 
                 if "<think>" in final_text:
-                    logging.debug("Removing <think> block...")
+                    logger.debug("Removing <think> block...")
                     final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
 
                 if use_plain:
@@ -554,11 +569,11 @@ class LLMCordBot(commands.Bot):
                     await response_msgs[-1].edit(embed=embed)
 
         except Exception:
-            logging.exception("Error while generating response!")
+            logger.exception("Error while generating response!")
             await trigger_msg.channel.send("⚠️ An error occurred.")
         finally:
             elapsed_time = time.perf_counter() - start_time
-            logging.info(f"Response finished in {elapsed_time:.4f} seconds!")
+            logger.info(f"Response finished in {elapsed_time:.4f} seconds!")
             for response_msg in response_msgs:
                 node = self.msg_nodes[response_msg.id]
                 node.text = "".join(response_contents)
@@ -568,7 +583,7 @@ class LLMCordBot(commands.Bot):
     def _prune_msg_nodes(self) -> None:
         """Prunes old MsgNodes to prevent memory leaks."""
         if len(self.msg_nodes) > MAX_MESSAGE_NODES:
-            logging.debug("Pruning old MsgNodes...")
+            logger.debug("Pruning old MsgNodes...")
 
             sorted_ids = sorted(self.msg_nodes.keys())
             for msg_id in sorted_ids[: len(self.msg_nodes) - MAX_MESSAGE_NODES]:
@@ -588,7 +603,7 @@ class LLMCordBot(commands.Bot):
 
             channel_name = getattr(interaction.channel, "name", "DM")
 
-            logging.info(f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})")
+            logger.info(f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})")
 
             await interaction.response.send_message(f"[Default model set to `{model}`.]")
 
@@ -610,7 +625,7 @@ class LLMCordBot(commands.Bot):
 
             config_manager.load_config()
 
-            logging.info(f"Admin {interaction.user.name} reloaded the configuration")
+            logger.info(f"Admin {interaction.user.name} reloaded the configuration")
 
             await interaction.response.send_message("Configuration reloaded from disk.", ephemeral=True)
 
@@ -633,7 +648,7 @@ class LLMCordBot(commands.Bot):
                 channel_mention = "Direct Messages"
                 channel_name = channel_mention
 
-            logging.info(f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})")
+            logger.info(f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})")
 
             await interaction.response.send_message(f"[`channel_model` for {channel_mention} set to: `{model}`.]")
 
@@ -691,7 +706,8 @@ class LLMCordBot(commands.Bot):
                     elif value.lower() in ("false", "0", "no", "off"):
                         parsed_value = False
                     else:
-                        raise ValueError("Invalid boolean")
+                        error = "Invalid boolean"
+                        raise ValueError(error)
                 elif target_type is int:
                     parsed_value = int(value)
                 elif target_type is float:
@@ -709,7 +725,7 @@ class LLMCordBot(commands.Bot):
             # Apply update
             config_manager.update_setting(key, parsed_value)
 
-            logging.info(f"Admin {interaction.user.name} changed config {key} to {parsed_value}")
+            logger.info(f"Admin {interaction.user.name} changed config {key} to {parsed_value}")
             await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
 
         @config_set.autocomplete("key")
@@ -720,7 +736,12 @@ class LLMCordBot(commands.Bot):
 
 
 def console_listener() -> None:
-    """Listen for console commands."""
+    """Listen for console commands in a blocking loop.
+
+    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
+
+    :return: None
+    """
     while True:
         try:
             command = input().strip().lower()
@@ -735,7 +756,14 @@ def console_listener() -> None:
 
 
 async def main() -> None:
-    """Main entry point."""
+    """Entry point for the bot application.
+
+    Initializes Discord intents, creates the bot instance, starts the console listener,
+    and runs the bot with the configured token.
+
+    :return: None
+    :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
+    """
     intents = discord.Intents.default()
     intents.message_content = True
     activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
