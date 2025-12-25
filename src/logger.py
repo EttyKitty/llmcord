@@ -10,8 +10,7 @@ if os.name == "nt":
 
 
 class RequestLogger:
-    """
-    Handles logging of LLM request payloads to a file.
+    """Handles logging of LLM request payloads to a file.
     Outputs pretty-printed JSON for readability.
     """
 
@@ -28,8 +27,7 @@ class RequestLogger:
         self.logger.addHandler(handler)
 
     def log(self, payload: Mapping[str, object]) -> None:
-        """
-        Sanitizes and logs the request payload as a pretty-printed JSON object.
+        """Sanitizes and logs the request payload as a pretty-printed JSON object.
         """
         try:
             # Create a shallow copy
@@ -53,7 +51,7 @@ class RequestLogger:
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
         except Exception as e:
-            logging.error(f"Failed to log LLM request: {e}")
+            logging.exception(f"Failed to log LLM request: {e}")
 
 
 class ColoredFormatter(logging.Formatter):

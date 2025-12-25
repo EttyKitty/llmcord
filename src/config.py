@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 
@@ -23,8 +23,8 @@ USER_CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
 
 
 def _str_presenter(dumper, data):
-    """
-    Preserve multiline strings when dumping yaml.
+    """Preserve multiline strings when dumping yaml.
+
     https://github.com/yaml/pyyaml/issues/240
     """
     if "\n" in data:
@@ -42,7 +42,7 @@ yaml.representer.SafeRepresenter.add_representer(str, _str_presenter)
 @dataclass
 class ChatConfig:
     default_model: str = ""
-    channel_models: Dict[int, str] = field(default_factory=dict)
+    channel_models: dict[int, str] = field(default_factory=dict)
     use_plain_responses: bool = False
     sanitize_response: bool = False
     force_reply_chains: bool = False
@@ -56,15 +56,15 @@ class ChatConfig:
 
 @dataclass
 class LLMConfig:
-    providers: Dict[str, Any] = field(default_factory=dict)
-    models: Dict[str, Any] = field(default_factory=dict)
+    providers: dict[str, Any] = field(default_factory=dict)
+    models: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class PermissionGroup:
-    admin_ids: List[int] = field(default_factory=list)
-    allowed_ids: List[int] = field(default_factory=list)
-    blocked_ids: List[int] = field(default_factory=list)
+    admin_ids: list[int] = field(default_factory=list)
+    allowed_ids: list[int] = field(default_factory=list)
+    blocked_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -102,13 +102,15 @@ class ConfigManager:
         self.config: RootConfig = RootConfig()
         self.load_config()
 
-    def deep_merge(self, base: dict, overrides: dict) -> dict:
-        """Recursive merge for dictionaries."""
+    def deep_merge(self, base: dict, overrides: dict, replace_keys: set[str] = None) -> dict:
+        """Merge dictionaries recursively."""
+        replace_keys = replace_keys or set()
         for key, value in overrides.items():
-            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                self.deep_merge(base[key], value)
-            else:
+            # If this key should be replaced (not merged), or if it's not a dict merge scenario
+            if key in replace_keys or not (isinstance(value, dict) and key in base and isinstance(base[key], dict)):
                 base[key] = value
+            else:
+                self.deep_merge(base[key], value, replace_keys)
         return base
 
     def load_config(self) -> None:
@@ -118,7 +120,7 @@ class ConfigManager:
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
         except FileNotFoundError:
-            logging.error("config-example.yaml not found! Exiting...")
+            logging.exception("config-example.yaml not found! Exiting...")
             exit(1)
 
         # 2. Load User Overrides
@@ -126,9 +128,9 @@ class ConfigManager:
             try:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
                     user_overrides = yaml.safe_load(f) or {}
-                self.deep_merge(raw_config, user_overrides)
+                self.deep_merge(raw_config, user_overrides, replace_keys={"models"})
             except Exception as e:
-                logging.error(f"Error loading config.yaml: {e}")
+                logging.exception(f"Error loading config.yaml: {e}")
 
         # 3. Map to Dataclass
         self.config = self._map_to_dataclass(RootConfig, raw_config)
@@ -154,8 +156,8 @@ class ConfigManager:
 
     def update_user_config(self, updates: dict) -> None:
         """
-        Reads config.yaml, applies deep merge with updates,
-        saves to disk, and reloads the in-memory config.
+        
+        Read config.yaml, apply deep merge with updates, save to disk, and reload the in-memory config.
         """
         current_user_config: dict = {}
         if os.path.exists(USER_CONFIG_FILE):
@@ -163,7 +165,7 @@ class ConfigManager:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
                     current_user_config = yaml.safe_load(f) or {}
             except Exception as e:
-                logging.error(f"Failed to read config.yaml: {e}")
+                logging.exception(f"Failed to read config.yaml: {e}")
 
         self.deep_merge(current_user_config, updates)
 
@@ -172,11 +174,11 @@ class ConfigManager:
                 yaml.dump(current_user_config, f, indent=2, sort_keys=False)
             self.load_config()
         except Exception as e:
-            logging.error(f"Failed to write config.yaml: {e}")
+            logging.exception(f"Failed to write config.yaml: {e}")
 
     def update_setting(self, path: str, value: Any) -> None:
-        """
-        Updates a setting using dot notation (e.g. 'chat.sanitize_response').
+        """Update a setting using dot notation (e.g. 'chat.sanitize_response').
+
         Converts the path to a nested dictionary and calls update_user_config.
         """
         keys = path.split(".")
@@ -188,18 +190,18 @@ class ConfigManager:
         self.update_user_config(update_payload)
 
     def set_default_model(self, model: str) -> None:
-        """Updates the default model in config.yaml."""
+        """Update the default model in config.yaml."""
         self.update_user_config({"chat": {"default_model": model}})
 
     def set_channel_model(self, channel_id: int, model: str) -> None:
-        """
-        Updates the model for a specific channel.
+        """Update the model for a specific channel.
+
         Uses deep_merge to ensure other channel overrides are preserved.
         """
         self.update_user_config({"chat": {"channel_models": {channel_id: model}}})
 
     def get_setting_value(self, path: str) -> Any:
-        """Helper to retrieve value from the loaded dataclass via dot notation."""
+        """Retrieve value from the loaded dataclass via dot notation."""
         current = self.config
         for key in path.split("."):
             current = getattr(current, key)

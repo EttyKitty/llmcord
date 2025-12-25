@@ -7,7 +7,7 @@ import time
 from base64 import b64encode
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Literal, NotRequired, Optional, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 import discord
 import httpx
@@ -42,8 +42,7 @@ TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 
 class LLMCordBot(commands.Bot):
-    """
-    The main bot class for llmcord, encapsulating state and logic.
+    """The main bot class for llmcord, encapsulating state and logic.
     """
 
     @property
@@ -67,18 +66,20 @@ class LLMCordBot(commands.Bot):
         # Register slash commands
         self._setup_commands()
 
+    async def close(self) -> None:
+        """Cleanup resources before shutting down."""
+        await self.httpx_client.aclose()
+        await super().close()
+
     async def setup_hook(self) -> None:
-        """
-        Internal discord.py hook for asynchronous setup.
-        """
+        """Set up internal discord.py hook for asynchronous setup."""
         await self.tree.sync()
         if client_id := self.config.discord.client_id:
             logging.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
         logging.info(f"Bot ready. Logged in as {self.safe_user}")
 
     def get_openai_client(self, provider_config: dict[str, Any]) -> AsyncOpenAI:
-        """
-        Retrieves or initializes an OpenAI-compatible client for a specific provider.
+        """Retrieve or initialize an OpenAI-compatible client for a specific provider.
 
         :param provider_config: The configuration dictionary for the provider.
         :return: An AsyncOpenAI client instance.
@@ -93,8 +94,7 @@ class LLMCordBot(commands.Bot):
         return self.openai_clients[base_url]
 
     def _is_message_allowed(self, msg: discord.Message) -> bool:
-        """
-        Checks if the message author and channel are allowed based on configuration.
+        """Check if the message author and channel are allowed based on configuration.
 
         :param msg: The Discord message to check.
         :return: True if allowed, False otherwise.
@@ -126,7 +126,7 @@ class LLMCordBot(commands.Bot):
                     getattr(msg.channel, "parent_id", None),
                     getattr(msg.channel, "category_id", None),
                 ),
-            )
+            ),
         )
         allowed_channels = permissions.channels.allowed_ids
         blocked_channels = permissions.channels.blocked_ids
@@ -138,18 +138,16 @@ class LLMCordBot(commands.Bot):
         return not is_bad_channel
 
     async def _fetch_history(self, message: discord.Message, max_messages: int, use_channel_context: bool) -> list[discord.Message]:
-        """
-        Retrieves message message_history either via channel message_history or reply chain.
+        """Retrieve message message_history either via channel message_history or reply chain.
 
         :param message: The trigger message.
         :param max_messages: Maximum number of messages to fetch.
         :param use_channel_context: Whether to use linear channel message_history.
         :return: A list of Discord messages.
         """
-
         message_history: list[discord.Message] = []
         history_ids: set[int] = set()
-        current_msg: Optional[discord.Message] = message
+        current_msg: discord.Message | None = message
 
         logging.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
 
@@ -158,42 +156,55 @@ class LLMCordBot(commands.Bot):
             async for msg in message.channel.history(limit=max_messages - 1, before=message):
                 message_history.append(msg)
             return message_history[:max_messages]
-        else:
-            while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
-                history_ids.add(current_msg.id)
-                message_history.append(current_msg)
-                next_msg = None
+        while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
+            history_ids.add(current_msg.id)
+            message_history.append(current_msg)
+            next_msg = None
 
-                if current_msg.reference and current_msg.reference.message_id:
-                    try:
-                        next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            if current_msg.reference and current_msg.reference.message_id:
+                try:
+                    next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
 
-                        if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
-                            next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
+                    if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
+                        next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
 
-                        if not next_msg and current_msg.reference is None and self.safe_user.mention not in current_msg.content:
-                            async for prev in current_msg.channel.history(before=current_msg, limit=1):
-                                is_dm = current_msg.channel.type == discord.ChannelType.private
-                                allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-                                is_valid_type = prev.type in allowed_types
+                    if not next_msg and current_msg.reference is None and self.safe_user.mention not in current_msg.content:
+                        async for prev in current_msg.channel.history(before=current_msg, limit=1):
+                            is_dm = current_msg.channel.type == discord.ChannelType.private
+                            allowed_types = (discord.MessageType.default, discord.MessageType.reply)
+                            is_valid_type = prev.type in allowed_types
 
-                                if is_dm:
-                                    is_expected_author = prev.author in (self.safe_user, current_msg.author)
-                                else:
-                                    is_expected_author = prev.author == current_msg.author
+                            if is_dm:
+                                is_expected_author = prev.author in (self.safe_user, current_msg.author)
+                            else:
+                                is_expected_author = prev.author == current_msg.author
 
-                                if is_valid_type and is_expected_author:
-                                    next_msg = prev
-                                break
-                        current_msg = next_msg
-                    except (discord.NotFound, discord.HTTPException):
-                        logging.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
-                        break
-            return message_history
+                            if is_valid_type and is_expected_author:
+                                next_msg = prev
+                            break
+                    current_msg = next_msg
+                except (discord.NotFound, discord.HTTPException):
+                    logging.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
+                    break
+
+            elif self.safe_user.mention not in current_msg.content:
+                async for prev in current_msg.channel.history(before=current_msg, limit=1):
+                    is_dm = current_msg.channel.type == discord.ChannelType.private
+                    allowed_types = (discord.MessageType.default, discord.MessageType.reply)
+                    is_valid_type = prev.type in allowed_types
+
+                    if is_dm:
+                        is_expected_author = prev.author in (self.safe_user, current_msg.author)
+                    else:
+                        is_expected_author = prev.author == current_msg.author
+
+                    if is_valid_type and is_expected_author:
+                        next_msg = prev
+                    break
+        return message_history
 
     async def _init_msg_node(self, msg: discord.Message) -> None:
-        """
-        Initializes a MsgNode for a message, processing attachments and text sources.
+        """Initialize a MsgNode for a message, processing attachments and text sources.
 
         :param msg: The Discord message to process.
         """
@@ -214,6 +225,10 @@ class LLMCordBot(commands.Bot):
 
             node.images = []
             for attachment, resp in downloads:
+                if resp is None:
+                    node.has_bad_attachments = True
+                    continue
+
                 content_type = attachment.content_type or ""
                 if content_type.startswith("text"):
                     text_parts.append(resp.text)
@@ -233,28 +248,30 @@ class LLMCordBot(commands.Bot):
             node.has_bad_attachments = len(msg.attachments) > len(to_download)
 
     def _get_embed_text(self, embed: discord.Embed) -> str:
-        """Extracts text from an embed."""
+        """Extract text from an embed."""
         fields = [embed.title, embed.description, getattr(embed.footer, "text", None)]
         return "\n".join(filter(None, fields))
 
     def _get_component_text(self, component: discord.Component) -> str:
-        """Extracts text from a component."""
+        """Extract text from a component."""
         return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
 
     def _is_supported_attachment(self, attachment: discord.Attachment) -> bool:
-        """Checks if attachment type is supported."""
+        """Check if attachment type is supported."""
         return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
 
-    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response]:
-        """Downloads an attachment."""
-        resp = await self.httpx_client.get(attachment.url)
-        return attachment, resp
+    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
+        """Download an attachment."""
+        try:
+            resp = await self.httpx_client.get(attachment.url)
+            resp.raise_for_status()
+            return attachment, resp
+        except (httpx.HTTPError, httpx.TimeoutException) as e:
+            logging.warning(f"Failed to download attachment {attachment.filename} ({attachment.url}): {e}")
+            return attachment, None
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
-        """
-        Replaces dynamic placeholders in prompt strings.
-        """
-
+        """Replace dynamic placeholders in prompt strings."""
         now = datetime.now(timezone.utc)
         user_roles = getattr(msg.author, "roles", [])
         user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
@@ -283,9 +300,7 @@ class LLMCordBot(commands.Bot):
         return text.strip()
 
     async def on_message(self, message: discord.Message) -> None:
-        """
-        Event handler for new messages. Orchestrates the response flow.
-        """
+        """Event handler for new messages. Orchestrates the response flow."""
         if not self.safe_user or message.author.bot:
             return
 
@@ -307,7 +322,7 @@ class LLMCordBot(commands.Bot):
             provider_config = config.llm.providers[provider]
             openai_client = self.get_openai_client(provider_config)
         except (ValueError, KeyError) as e:
-            logging.exception(f"Failed to load provider configuration for {provider_slash_model}!\n{e}")
+            logging.exception(f"Failed to load provider configuration for {provider_slash_model}!")
             return
 
         accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
@@ -417,10 +432,7 @@ class LLMCordBot(commands.Bot):
         provider_config: dict[str, Any],
         warnings: set[str],
     ) -> None:
-        """
-        Handles the streaming of the LLM response back to Discord.
-        """
-
+        """Handle the streaming of the LLM response back to Discord."""
         start_time = time.perf_counter()
 
         use_plain = self.config.chat.use_plain_responses
@@ -515,7 +527,7 @@ class LLMCordBot(commands.Bot):
                         logging.debug(f"Stream finished. Reason: {finish_reason}")
 
                     if embed:
-                        now_ts = datetime.now().timestamp()
+                        now_ts = datetime.now(timezone.utc).timestamp()
                         time_delta = now_ts - self.last_task_time
                         is_final = finish_reason is not None
                         ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
@@ -572,7 +584,7 @@ class LLMCordBot(commands.Bot):
                 self.msg_nodes.pop(msg_id, None)
 
     def _setup_commands(self) -> None:
-        """Sets up the slash command tree."""
+        """Set up the slash command tree."""
         config_group = app_commands.Group(name="config", description="Bot configuration commands")
 
         @config_group.command(name="model", description="Switch the default model")
@@ -612,7 +624,7 @@ class LLMCordBot(commands.Bot):
             await interaction.response.send_message("Configuration reloaded from disk.", ephemeral=True)
 
         @config_group.command(name="channelmodel", description="Switch the model for a specific channel")
-        async def config_channel_model(interaction: discord.Interaction, model: str, channel: discord.abc.GuildChannel) -> None:
+        async def config_channel_model(interaction: discord.Interaction, model: str, channel: discord.abc.GuildChannel | None = None) -> None:
             if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
                 await interaction.response.send_message("You don't have permission to change the channel model.", ephemeral=True)
                 return
@@ -679,7 +691,6 @@ class LLMCordBot(commands.Bot):
                 )
                 return
 
-            target_type = type(current_value)
             parsed_value: int | bool | float | str
 
             try:
@@ -718,7 +729,7 @@ class LLMCordBot(commands.Bot):
 
 
 def console_listener() -> None:
-    """Listens for console commands."""
+    """Listen for console commands."""
     while True:
         try:
             command = input().strip().lower()
