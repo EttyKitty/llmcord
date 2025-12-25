@@ -50,8 +50,8 @@ class RequestLogger:
 
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
-        except Exception as e:
-            logging.exception(f"Failed to log LLM request: {e}")
+        except Exception:
+            logging.exception(f"Failed to log LLM request!")
 
 
 class ColoredFormatter(logging.Formatter):

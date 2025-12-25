@@ -27,7 +27,7 @@ if __name__ == "__main__":
             logger.info("Bot stopped by user.")
             break
 
-        except Exception as e:
+        except Exception:
             run_duration = time.time() - start_time
 
             # If the bot survived longer than the threshold, it's not a boot loop.
@@ -36,7 +36,7 @@ if __name__ == "__main__":
                 retry_count = 0
 
             retry_count += 1
-            logger.error(f"Bot crashed with error: {e}")
+            logger.exception(f"Bot crashed!")
 
             if retry_count > MAX_RETRIES:
                 logger.warning(f"Maximum retry limit ({MAX_RETRIES}) reached.")

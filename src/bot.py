@@ -168,20 +168,6 @@ class LLMCordBot(commands.Bot):
                     if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
                         next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
 
-                    if not next_msg and current_msg.reference is None and self.safe_user.mention not in current_msg.content:
-                        async for prev in current_msg.channel.history(before=current_msg, limit=1):
-                            is_dm = current_msg.channel.type == discord.ChannelType.private
-                            allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-                            is_valid_type = prev.type in allowed_types
-
-                            if is_dm:
-                                is_expected_author = prev.author in (self.safe_user, current_msg.author)
-                            else:
-                                is_expected_author = prev.author == current_msg.author
-
-                            if is_valid_type and is_expected_author:
-                                next_msg = prev
-                            break
                     current_msg = next_msg
                 except (discord.NotFound, discord.HTTPException):
                     logging.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
@@ -193,10 +179,7 @@ class LLMCordBot(commands.Bot):
                     allowed_types = (discord.MessageType.default, discord.MessageType.reply)
                     is_valid_type = prev.type in allowed_types
 
-                    if is_dm:
-                        is_expected_author = prev.author in (self.safe_user, current_msg.author)
-                    else:
-                        is_expected_author = prev.author == current_msg.author
+                    is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
 
                     if is_valid_type and is_expected_author:
                         next_msg = prev
@@ -321,7 +304,7 @@ class LLMCordBot(commands.Bot):
             provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
             provider_config = config.llm.providers[provider]
             openai_client = self.get_openai_client(provider_config)
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError):
             logging.exception(f"Failed to load provider configuration for {provider_slash_model}!")
             return
 

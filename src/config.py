@@ -102,7 +102,7 @@ class ConfigManager:
         self.config: RootConfig = RootConfig()
         self.load_config()
 
-    def deep_merge(self, base: dict, overrides: dict, replace_keys: set[str] = None) -> dict:
+    def deep_merge(self, base: dict, overrides: dict, replace_keys: set[str] | None = None) -> dict:
         """Merge dictionaries recursively."""
         replace_keys = replace_keys or set()
         for key, value in overrides.items():
@@ -129,8 +129,8 @@ class ConfigManager:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
                     user_overrides = yaml.safe_load(f) or {}
                 self.deep_merge(raw_config, user_overrides, replace_keys={"models"})
-            except Exception as e:
-                logging.exception(f"Error loading config.yaml: {e}")
+            except Exception:
+                logging.exception(f"Error loading config.yaml!")
 
         # 3. Map to Dataclass
         self.config = self._map_to_dataclass(RootConfig, raw_config)
@@ -155,17 +155,14 @@ class ConfigManager:
         return cls(**kwargs)
 
     def update_user_config(self, updates: dict) -> None:
-        """
-        
-        Read config.yaml, apply deep merge with updates, save to disk, and reload the in-memory config.
-        """
+        """Read config.yaml, apply deep merge with updates, save to disk, and reload the in-memory config."""
         current_user_config: dict = {}
         if os.path.exists(USER_CONFIG_FILE):
             try:
                 with open(USER_CONFIG_FILE, encoding="utf-8") as f:
                     current_user_config = yaml.safe_load(f) or {}
-            except Exception as e:
-                logging.exception(f"Failed to read config.yaml: {e}")
+            except Exception:
+                logging.exception(f"Failed to read config.yaml!")
 
         self.deep_merge(current_user_config, updates)
 
@@ -173,8 +170,8 @@ class ConfigManager:
             with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
                 yaml.dump(current_user_config, f, indent=2, sort_keys=False)
             self.load_config()
-        except Exception as e:
-            logging.exception(f"Failed to write config.yaml: {e}")
+        except Exception:
+            logging.exception(f"Failed to write config.yaml!")
 
     def update_setting(self, path: str, value: Any) -> None:
         """Update a setting using dot notation (e.g. 'chat.sanitize_response').
