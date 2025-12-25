@@ -270,9 +270,10 @@ class LLMCordBot(commands.Bot):
             "{user_id}": str(msg.author.id),
             "{user_roles}": user_roles_str,
             "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
+            "{guild_description}": msg.guild.description if msg.guild else "",
             "{guild_emojis}": guild_emojis_str,
-            "{channel_name}": getattr(msg.channel, "name", "DM"),
-            "{channel_topic}": getattr(msg.channel, "topic", "") or "",
+            "{channel_name}": getattr(msg.channel, "name", ""),
+            "{channel_topic}": getattr(msg.channel, "topic", ""),
             "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
         }
         for key, value in placeholders.items():
@@ -298,7 +299,7 @@ class LLMCordBot(commands.Bot):
         config = self.config
 
         # 1. Configuration Resolution
-        provider_slash_model = config.discord.channel_models.get(message.channel.id, config.discord.default_model)
+        provider_slash_model = config.chat.channel_models.get(message.channel.id, config.chat.default_model)
         try:
             provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
             provider_config = config.llm.providers[provider]
@@ -587,7 +588,7 @@ class LLMCordBot(commands.Bot):
 
         @config_model.autocomplete("model")
         async def model_autocomplete(interaction: discord.Interaction, current: str) -> List[Choice[str]]:
-            default_model = self.config.discord.default_model
+            default_model = self.config.chat.default_model
             models = self.config.llm.models
 
             choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if current.lower() in default_model.lower() else []
@@ -632,8 +633,8 @@ class LLMCordBot(commands.Bot):
 
         @config_channel_model.autocomplete("model")
         async def config_channel_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-            default_model = config_manager.config.discord.default_model
-            channel_models = config_manager.config.discord.channel_models
+            default_model = config_manager.config.chat.default_model
+            channel_models = config_manager.config.chat.channel_models
 
             current_active = channel_models.get(interaction.channel_id or 0, default_model)
             is_overridden = interaction.channel_id in channel_models

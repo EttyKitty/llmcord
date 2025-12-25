@@ -13,9 +13,6 @@ discord:
   # Set to `false` to disable direct message access.
   allow_dms: false
   
-  default_model: {}
-  channel_models: {}
-  
   # Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.
   # Leave `allowed_ids` empty to allow ALL in that category.
   # Role and channel permissions do not affect DMs.
@@ -35,6 +32,9 @@ discord:
       blocked_ids: []
 
 chat:
+  default_model: {}
+  channel_models: {}
+
   # The maximum amount of text allowed in a single message, including text from file attachments.
   max_text: 100000
   
@@ -113,16 +113,15 @@ llm:
   # The first model in your `models` list will be the default model at startup.
   # Some vision models may need `:vision` added to the end of their name to enable image support.
   models:
-    # Be sure to replace this example with an actual model in your `config.yaml` or the bot'll break.
-    exampleprovider/example-model-name:
-      temperature: 1
-      top_p: 1
-      top_k: 0
-      frequency_penalty: 0
-      presence_penalty: 0
-      max_tokens: 0
-      n: 0
-      reasoning_effort: auto
+    # exampleprovider/example-model-name:
+    #   temperature: 1
+    #   top_p: 1
+    #   top_k: 0
+    #   frequency_penalty: 0
+    #   presence_penalty: 0
+    #   max_tokens: 0
+    #   n: 0
+    #   reasoning_effort: auto
 
 prompts:
   # Write anything you want to customize the bot's behavior!

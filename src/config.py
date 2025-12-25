@@ -41,6 +41,8 @@ yaml.representer.SafeRepresenter.add_representer(str, _str_presenter)
 
 @dataclass
 class ChatConfig:
+    default_model: str = ""
+    channel_models: Dict[int, str] = field(default_factory=dict)
     use_plain_responses: bool = False
     sanitize_response: bool = False
     force_reply_chains: bool = False
@@ -79,8 +81,6 @@ class DiscordSettings:
     status_message: str = ""
     allow_dms: bool = False
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
-    default_model: str = ""
-    channel_models: Dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -134,8 +134,8 @@ class ConfigManager:
         self.config = self._map_to_dataclass(RootConfig, raw_config)
 
         # 4. Runtime Defaults
-        if not self.config.discord.default_model and self.config.llm.models:
-            self.config.discord.default_model = next(iter(self.config.llm.models))
+        if not self.config.chat.default_model and self.config.llm.models:
+            self.config.chat.default_model = next(iter(self.config.llm.models))
 
     def _map_to_dataclass(self, cls: Any, data: dict) -> Any:
         if not isinstance(data, dict):
@@ -189,14 +189,14 @@ class ConfigManager:
 
     def set_default_model(self, model: str) -> None:
         """Updates the default model in config.yaml."""
-        self.update_user_config({"discord": {"default_model": model}})
+        self.update_user_config({"chat": {"default_model": model}})
 
     def set_channel_model(self, channel_id: int, model: str) -> None:
         """
         Updates the model for a specific channel.
         Uses deep_merge to ensure other channel overrides are preserved.
         """
-        self.update_user_config({"discord": {"channel_models": {channel_id: model}}})
+        self.update_user_config({"chat": {"channel_models": {channel_id: model}}})
 
     def get_setting_value(self, path: str) -> Any:
         """Helper to retrieve value from the loaded dataclass via dot notation."""
