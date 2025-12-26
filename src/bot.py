@@ -30,9 +30,10 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
+from .commands import setup
 from .config import ConfigValue, RootConfig, config_manager
 from .logger import request_logger
-from .utils import MsgNode, clean_response
+from .utils import MsgNode, clean_response, is_message_allowed
 
 REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
@@ -130,9 +131,6 @@ class LLMCordBot(commands.Bot):
         self.last_task_time: float = 0.0
         self.httpx_client = httpx.AsyncClient()
 
-        # Register slash commands
-        self._setup_commands()
-
     async def close(self) -> None:
         """Cleanup resources before shutting down."""
         await self.httpx_client.aclose()
@@ -140,6 +138,7 @@ class LLMCordBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Set up internal discord.py hook for asynchronous setup."""
+        await setup(self)
         await self.tree.sync()
 
         if client_id := self.config.discord.client_id:
@@ -152,24 +151,29 @@ class LLMCordBot(commands.Bot):
 
         :param message: The incoming Discord message to process.
         """
+        # =============================
+        # ======== 0. Gatekeep ========
+        # =============================
         if not self.safe_user or message.author.bot:
             return
 
-        if not self._is_message_allowed(message):
+        is_dm = message.channel.type == discord.ChannelType.private
+        is_mentioned = self.safe_user in message.mentions
+
+        if not (is_dm or is_mentioned):
+            return
+
+        if not is_message_allowed(message, self.config.discord.permissions, allow_dms=self.config.discord.allow_dms):
             logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
             return
 
+        # =============================
+        # === 1. Build the Request ====
+        # =============================
+        # - Build Context
         start_time = time.perf_counter()
-
-        # 1. Configuration Resolution
-        try:
-            provider, model, provider_config, openai_client, accept_images, accept_usernames = self._resolve_llm_configuration(message)
-        except (ValueError, KeyError, TypeError):
-            logger.exception("Failed to resolve LLM configuration!")
-            return
-
-        # 2. Context Building
-        # Generate system prompts early to calculate their token cost
+        provider, model = self._get_llm(message.channel.id)
+        # - Generate system prompts early to calculate their token cost
         pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
         post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
 
@@ -179,9 +183,11 @@ class LLMCordBot(commands.Bot):
         if post_history:
             system_token_count += len(TOKENIZER.encode(post_history))
 
-        # Exceptions here will be handled by discord.py's global error handler
+        # - Build the History
         message_history = await self._prepare_message_history(message)
 
+        # - Build the Payload
+        accept_images, accept_usernames = self._get_llm_specials(provider, model)
         messages_payload, user_warnings = await self._build_messages_payload(
             message_history=message_history,
             system_token_count=system_token_count,
@@ -189,77 +195,58 @@ class LLMCordBot(commands.Bot):
             accept_usernames=accept_usernames,
         )
 
-        # 3. Prompt Insertion
+        # - Insert Prompts
         if pre_history:
-            messages_payload.append({"role": "system", "content": pre_history})
+            messages_payload.insert(0, {"role": "system", "content": pre_history})
+
         if post_history:
-            messages_payload.insert(0, {"role": "system", "content": post_history})
+            messages_payload.append({"role": "system", "content": post_history})
+
+        # - Finish the Payload
+        provider_config, openai_client = self._get_provider_config(provider)
+        chat_params = self._build_chat_params(model, messages_payload, provider, provider_config)
 
         elapsed_time = time.perf_counter() - start_time
         logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
 
-        # 4. Parameter Preparation
-        chat_params = self._build_chat_params(model, messages_payload, provider, provider_config)
-
-        # 5. Generation
+        # 2. Send the Request + 3. Get the Response (Fuck, why are they in one function)
         await self._generate_response(message, openai_client, chat_params, user_warnings)
 
-        # 6. Cleanup
+        # 4. Cleanup
         self._prune_msg_nodes()
 
-    def _is_message_allowed(self, msg: discord.Message) -> bool:
-        """Check if the message author and channel are allowed based on configuration.
 
-        :param msg: The Discord message to check.
-        :return: True if allowed, False otherwise.
+    def _get_llm(self, channel_id: int) -> tuple[str, str]:
+        """Resolve the LLM provider, model.
+
+        :param channel_id: The Discord channel that triggered the request.
+        :return: A tuple containing provider name, model name
         """
-        is_dm = msg.channel.type == discord.ChannelType.private
-        permissions = self.config.discord.permissions
+        provider_slash_model = self.config.chat.channel_models.get(channel_id, self.config.chat.default_model)
+        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        return provider, model
 
-        if msg.author.id in permissions.users.admin_ids:
-            return True
-
-        role_ids = {role.id for role in getattr(msg.author, "roles", ())}
-        allowed_users = permissions.users.allowed_ids
-        blocked_users = permissions.users.blocked_ids
-        allowed_roles = permissions.roles.allowed_ids
-        blocked_roles = permissions.roles.blocked_ids
-
-        allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-        is_good_user = allow_all_users or msg.author.id in allowed_users or any(rid in allowed_roles for rid in role_ids)
-        is_bad_user = not is_good_user or msg.author.id in blocked_users or any(rid in blocked_roles for rid in role_ids)
-
-        if is_bad_user:
-            return False
-
-        channel_ids = set(filter(None, (msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None))))
-        allowed_channels = permissions.channels.allowed_ids
-        blocked_channels = permissions.channels.blocked_ids
-        allow_dms = self.config.discord.allow_dms
-
-        is_good_channel = allow_dms if is_dm else (not allowed_channels or any(cid in allowed_channels for cid in channel_ids))
-        is_bad_channel = not is_good_channel or any(cid in blocked_channels for cid in channel_ids)
-
-        return not is_bad_channel
-
-    def _resolve_llm_configuration(self, message: discord.Message) -> tuple[str, str, ConfigValue, AsyncOpenAI, bool, bool]:
-        """Resolve the LLM provider, model, client, and associated flags based on configuration.
+    def _get_llm_specials(self, provider: str, model: str) -> tuple[bool, bool]:
+        """Resolve the LLM flags based on configuration.
 
         :param message: The Discord message that triggered the request.
-        :return: A tuple containing provider name, model name, provider config, OpenAI client,
-        accept_images flag, and accept_usernames flag.
-        :raises ValueError: If the model configuration is invalid.
-        :raises KeyError: If the provider is not found in the configuration.
-        :raises TypeError: If the provider configuration is not a dictionary.
+        :return: A tuple containing accept_images flag, and accept_usernames flag.
         """
-        provider_slash_model = self.config.chat.channel_models.get(message.channel.id, self.config.chat.default_model)
-        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        accept_images = any(x in model.lower() for x in VISION_MODEL_TAGS)
+        accept_usernames = any(provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+
+        return accept_images, accept_usernames
+
+    def _get_provider_config(self, provider: str) -> tuple[ConfigValue, AsyncOpenAI]:
+        """Resolve the LLM client.
+
+        :param channel_id: The Discord channel that triggered the request.
+        :return: A tuple containing provider config, OpenAI client.
+        """
         provider_config = self.config.llm.providers[provider]
         openai_client = self.get_openai_client(provider_config)
-        accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-        accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
-        return provider, model, provider_config, openai_client, accept_images, accept_usernames
+        return provider_config, openai_client
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
         """Replace dynamic placeholders in prompt strings."""
@@ -319,6 +306,7 @@ class LLMCordBot(commands.Bot):
 
         if use_channel_context:
             return await self._fetch_channel_history(message, max_messages)
+
         return await self._fetch_reply_chain_history(message, max_messages)
 
     async def _fetch_channel_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
@@ -500,7 +488,8 @@ class LLMCordBot(commands.Bot):
                 user_warnings.add(warning)
 
         logger.debug("Context ready. Messages: %d.", len(messages_payload))
-        return messages_payload, user_warnings
+
+        return messages_payload[::-1], user_warnings
 
     def _create_message_payload(
         self,
@@ -639,37 +628,44 @@ class LLMCordBot(commands.Bot):
         logger.debug("Logging the request...")
         request_logger.log(chat_params)
 
+        typing_manager = trigger_msg.channel.typing()
+        typing_active = False
+
         try:
-            async with trigger_msg.channel.typing():
-                stream = await client.chat.completions.create(**chat_params)
-                first_chunk = True
+            stream = await client.chat.completions.create(**chat_params)
+            is_first_chunk = True
 
-                async for chunk in stream:
-                    if first_chunk:
-                        logger.debug("Stream started...")
-                        first_chunk = False
+            async for chunk in stream:
+                if is_first_chunk:
+                    logger.debug("Stream started...")
+                    await typing_manager.__aenter__()
+                    typing_active = True
+                    is_first_chunk = False
 
-                    content = self._extract_chunk_content(chunk)
-                    if not content:
-                        continue
+                content = self._extract_chunk_content(chunk)
+                if not content:
+                    continue
 
-                    self._update_content_buffer(response_contents, content, max_len)
-                    finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+                self._update_content_buffer(response_contents, content, max_len)
+                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
 
-                    await self._update_stream_display(
-                        trigger_msg,
-                        response_msgs,
-                        response_contents,
-                        embed,
-                        is_final=finish_reason is not None,
-                    )
+                await self._update_stream_display(
+                    trigger_msg,
+                    response_msgs,
+                    response_contents,
+                    embed,
+                    is_final=finish_reason is not None,
+                )
 
-                await self._finalize_response(trigger_msg, response_msgs, response_contents, embed)
+            await self._finalize_response(trigger_msg, response_msgs, response_contents, embed)
 
         except Exception:
             logger.exception("Error while generating response!")
             await trigger_msg.channel.send("⚠️ An error occurred.")
         finally:
+            if typing_active:
+                await typing_manager.__aexit__(None, None, None)
+
             elapsed = time.perf_counter() - start_time
             logger.info("Response finished in %s seconds!", f"{elapsed:.4f}")
             self._release_node_locks(response_msgs, response_contents)
@@ -868,9 +864,16 @@ class LLMCordBot(commands.Bot):
 
     def _prune_msg_nodes(self) -> None:
         """Prunes old MsgNodes to prevent memory leaks."""
-        if len(self.msg_nodes) > MAX_MESSAGE_NODES:
-            logger.debug("Pruning old MsgNodes...")
+        if len(self.msg_nodes) <= MAX_MESSAGE_NODES:
+            return
 
-            sorted_ids = sorted(self.msg_nodes.keys())
-            for msg_id in sorted_ids[: len(self.msg_nodes) - MAX_MESSAGE_NODES]:
-                self.msg_nodes.pop(msg_id, None)
+        to_remove_count = len(self.msg_nodes) - MAX_MESSAGE_NODES
+        logger.debug("Pruning %d old MsgNodes...", to_remove_count)
+
+        sorted_ids = sorted(self.msg_nodes.keys())
+        ids_to_delete = sorted_ids[:to_remove_count]
+
+        for msg_id in ids_to_delete:
+            self.msg_nodes.pop(msg_id, None)
+
+        logger.debug("Successfully pruned %d nodes!", len(ids_to_delete))
