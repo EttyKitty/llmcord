@@ -13,7 +13,6 @@ import re
 import threading
 import time
 from base64 import b64encode
-from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,22 +23,17 @@ from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 from openai.types.chat import (
-    ChatCompletionChunk,
     ChatCompletionContentPartParam,
     ChatCompletionMessageParam,
     ChatCompletionUserMessageParam,
 )
 
 from .commands import setup
-from .config import ConfigValue, RootConfig, config_manager
+from .config import RootConfig, config_manager
 from .logger import request_logger
-from .utils import MsgNode, clean_response, is_message_allowed
+from .utils import MsgNode, build_chat_params, extract_chunk_content, get_component_text, get_embed_text, get_llm_provider_model, get_llm_specials, get_provider_config, is_message_allowed, is_supported_attachment, process_response_text, update_content_buffer
 
 REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
-REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
-VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
-PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
@@ -53,7 +47,6 @@ async def main() -> None:
     Initializes Discord intents, creates the bot instance, starts the console listener,
     and runs the bot with the configured token.
 
-    :return: None
     :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
     """
     intents = discord.Intents.default()
@@ -74,8 +67,6 @@ def console_listener() -> None:
     """Listen for console commands in a blocking loop.
 
     Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
-
-    :return: None
     """
     try:
         while True:
@@ -169,7 +160,11 @@ class LLMCordBot(commands.Bot):
         # =============================
         # - Build Context
         start_time = time.perf_counter()
-        provider, model = self._get_llm(message.channel.id)
+        provider, model = get_llm_provider_model(
+            channel_id=message.channel.id,
+            channel_models=self.config.chat.channel_models,
+            default_model=self.config.chat.default_model,
+        )
         # - Generate system prompts early to calculate their token cost
         pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
         post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
@@ -184,7 +179,7 @@ class LLMCordBot(commands.Bot):
         message_history = await self._prepare_message_history(message)
 
         # - Build the Payload
-        accept_images, accept_usernames = self._get_llm_specials(provider, model)
+        accept_images, accept_usernames = get_llm_specials(provider, model)
         messages_payload = await self._build_messages_payload(
             message_history=message_history,
             system_token_count=system_token_count,
@@ -200,8 +195,8 @@ class LLMCordBot(commands.Bot):
             messages_payload.append({"role": "system", "content": post_history})
 
         # - Finish the Payload
-        provider_config, openai_client = self._get_provider_config(provider)
-        chat_params = self._build_chat_params(model, messages_payload, provider, provider_config)
+        provider_config, openai_client = get_provider_config(provider=provider, providers_config=self.config.llm.providers, client_cache=self.openai_clients, httpx_client=self.httpx_client)
+        chat_params = build_chat_params(model=model, messages=messages_payload, provider=provider, provider_config=provider_config, llm_models_config=self.config.llm.models)
 
         elapsed_time = time.perf_counter() - start_time
         logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
@@ -211,38 +206,6 @@ class LLMCordBot(commands.Bot):
 
         # 4. Cleanup
         self._prune_msg_nodes()
-
-    def _get_llm(self, channel_id: int) -> tuple[str, str]:
-        """Resolve the LLM provider, model.
-
-        :param channel_id: The Discord channel that triggered the request.
-        :return: A tuple containing provider name, model name
-        """
-        provider_slash_model = self.config.chat.channel_models.get(channel_id, self.config.chat.default_model)
-        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-        return provider, model
-
-    def _get_llm_specials(self, provider: str, model: str) -> tuple[bool, bool]:
-        """Resolve the LLM flags based on configuration.
-
-        :param message: The Discord message that triggered the request.
-        :return: A tuple containing accept_images flag, and accept_usernames flag.
-        """
-        accept_images = any(x in model.lower() for x in VISION_MODEL_TAGS)
-        accept_usernames = any(provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
-
-        return accept_images, accept_usernames
-
-    def _get_provider_config(self, provider: str) -> tuple[ConfigValue, AsyncOpenAI]:
-        """Resolve the LLM client.
-
-        :param channel_id: The Discord channel that triggered the request.
-        :return: A tuple containing provider config, OpenAI client.
-        """
-        provider_config = self.config.llm.providers[provider]
-        openai_client = self.get_openai_client(provider_config)
-
-        return provider_config, openai_client
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
         """Replace dynamic placeholders in prompt strings."""
@@ -381,10 +344,10 @@ class LLMCordBot(commands.Bot):
                 return
 
             text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
-            text_parts.extend(self._get_embed_text(error) for error in msg.embeds)
-            text_parts.extend(self._get_component_text(c) for c in msg.components)
+            text_parts.extend(get_embed_text(error) for error in msg.embeds)
+            text_parts.extend(get_component_text(c) for c in msg.components)
 
-            to_download = [a for a in msg.attachments if self._is_supported_attachment(a)]
+            to_download = [a for a in msg.attachments if is_supported_attachment(a)]
             downloads = await asyncio.gather(*(self._download_attachment(a) for a in to_download))
 
             node.images = []
@@ -410,19 +373,6 @@ class LLMCordBot(commands.Bot):
 
             node.user_display_name = author.display_name if node.role == "user" else None
             node.has_bad_attachments = len(msg.attachments) > len(to_download)
-
-    def _get_embed_text(self, embed: discord.Embed) -> str:
-        """Extract text from an embed."""
-        fields = [embed.title, embed.description, getattr(embed.footer, "text", None)]
-        return "\n".join(filter(None, fields))
-
-    def _get_component_text(self, component: discord.Component) -> str:
-        """Extract text from a component."""
-        return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
-
-    def _is_supported_attachment(self, attachment: discord.Attachment) -> bool:
-        """Check if attachment type is supported."""
-        return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
 
     async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
         """Download an attachment."""
@@ -534,64 +484,6 @@ class LLMCordBot(commands.Bot):
 
         return message_payload, msg_tokens
 
-    def get_openai_client(self, provider_config: ConfigValue) -> AsyncOpenAI:
-        """Retrieve or initialize an OpenAI-compatible client for a specific provider.
-
-        :param provider_config: The configuration dictionary for the provider.
-        :return: An AsyncOpenAI client instance.
-        """
-        if not isinstance(provider_config, dict):
-            error = f"Provider config must be a dict, got {type(provider_config)}"
-            raise TypeError(error)
-
-        base_url = provider_config["base_url"]
-        if base_url not in self.openai_clients:
-            self.openai_clients[base_url] = AsyncOpenAI(
-                base_url=base_url,
-                api_key=provider_config.get("api_key", "sk-no-key-required"),
-                http_client=self.httpx_client,
-            )
-
-        return self.openai_clients[base_url]
-
-    def _build_chat_params(
-        self,
-        model: str,
-        messages: Sequence[ChatCompletionMessageParam],
-        provider: str,
-        provider_config: ConfigValue,
-    ) -> dict[str, Any]:
-        """Construct the parameters for the OpenAI chat completion call.
-
-        :param model: The model identifier.
-        :param messages: The list of message payloads.
-        :param provider: The provider identifier.
-        :param provider_config: The configuration dictionary for the provider.
-        :return: A dictionary of parameters for the API call.
-        :raises TypeError: If provider_config is not a dictionary.
-        """
-        if not isinstance(provider_config, dict):
-            error = f"Provider config must be a dict, got {type(provider_config)}"
-            raise TypeError(error)
-
-        raw_overrides = self.config.llm.models.get(f"{provider}/{model}")
-        model_overrides: dict[str, object] = raw_overrides if isinstance(raw_overrides, dict) else {}
-
-        extra_headers = provider_config.get("extra_headers")
-        extra_query = provider_config.get("extra_query")
-        raw_extra_body = provider_config.get("extra_body")
-        extra_body_base = raw_extra_body if isinstance(raw_extra_body, dict) else {}
-        extra_body: dict[str, object] = extra_body_base | model_overrides
-
-        return {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            "extra_headers": extra_headers if isinstance(extra_headers, dict) else None,
-            "extra_query": extra_query if isinstance(extra_query, dict) else None,
-            "extra_body": extra_body,
-        }
-
     async def _generate_response(
         self,
         trigger_msg: discord.Message,
@@ -627,11 +519,11 @@ class LLMCordBot(commands.Bot):
                     typing_active = True
                     is_first_chunk = False
 
-                content = self._extract_chunk_content(chunk)
+                content = extract_chunk_content(chunk)
                 if not content:
                     continue
 
-                self._update_content_buffer(response_contents, content, max_len)
+                update_content_buffer(response_contents, content, max_len)
                 finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
                 logger.debug("Stream finished. Reason: %s", finish_reason)
 
@@ -648,46 +540,6 @@ class LLMCordBot(commands.Bot):
             logger.info("Response finished in %s seconds!", f"{elapsed:.4f}")
             self._release_node_locks(response_msgs, response_contents)
 
-    def _extract_chunk_content(self, chunk: ChatCompletionChunk) -> str:
-        """Extract text content from a streaming chunk.
-
-        Handles standard strings and multimodal list/object structures.
-
-        :param chunk: The chunk object from the API response.
-        :return: The extracted text content.
-        """
-        if not chunk.choices:
-            return ""
-
-        choice = chunk.choices[0]
-        delta_content = choice.delta.content or ""
-
-        # Handle potential list content (Mistral/Multimodal quirks)
-        if isinstance(delta_content, list):
-            logger.debug("Multimodal content detected...")
-            parts_text = ""
-            for part in delta_content:
-                if isinstance(part, str):
-                    parts_text += part
-                elif isinstance(part, dict):
-                    parts_text += part.get("text", "")
-                elif hasattr(part, "text"):
-                    parts_text += part.text
-            return parts_text
-
-        return str(delta_content)
-
-    def _update_content_buffer(self, buffer: list[str], new_content: str, max_len: int) -> None:
-        """Append content to the buffer, creating new chunks if max length is exceeded.
-
-        :param buffer: The list of message content chunks.
-        :param new_content: The new text to append.
-        :param max_len: The maximum length of a single message.
-        """
-        if not buffer or len(buffer[-1]) + len(new_content) > max_len:
-            buffer.append("")
-        buffer[-1] += new_content
-
     async def _finalize_response(
         self,
         trigger_msg: discord.Message,
@@ -701,7 +553,7 @@ class LLMCordBot(commands.Bot):
         :param contents: The raw content chunks.
         """
         full_text = "".join(contents)
-        final_text = self._process_final_text(full_text)
+        final_text = process_response_text(text=full_text, sanitize=self.config.chat.sanitize_response)
 
         # Split final text into 2000-char chunks for plain text sending
         chunk_size = 2000
@@ -709,23 +561,6 @@ class LLMCordBot(commands.Bot):
         for chunk in text_chunks:
             view = LayoutView().add_item(TextDisplay(content=chunk))
             await self._send_response_node(trigger_msg, msgs, view=view)
-
-    def _process_final_text(self, text: str) -> str:
-        """Sanitize and process the final response text.
-
-        :param text: The raw response text.
-        :return: The processed text.
-        """
-        final_text = text
-        if self.config.chat.sanitize_response:
-            logger.debug("Sanitizing text...")
-            final_text = clean_response(final_text)
-
-        if "<think>" in final_text:
-            logger.debug("Removing <think> block...")
-            final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
-
-        return final_text
 
     async def _send_response_node(
         self,
