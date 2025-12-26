@@ -4,12 +4,6 @@ This module contains the core implementation of the LLMCord Discord bot.
 It handles the bot's lifecycle, event processing, message validation,
 context construction, and interaction with various LLM providers using
 OpenAI-compatible APIs.
-
-Key Components:
-- LLMCordBot: The main bot class inheriting from discord.ext.commands.Bot.
-- Message Processing: Logic for fetching history, parsing attachments, and building prompts.
-- Response Generation: Streaming responses from LLMs to Discord messages.
-- Configuration Management: Slash commands for dynamic bot configuration.
 """
 
 import asyncio
@@ -26,8 +20,6 @@ from typing import Any
 import discord
 import httpx
 import tiktoken
-from discord import app_commands
-from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
@@ -38,7 +30,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
-from .config import EDITABLE_SETTINGS, ConfigValue, RootConfig, config_manager
+from .config import ConfigValue, RootConfig, config_manager
 from .logger import request_logger
 from .utils import MsgNode, clean_response
 
@@ -882,154 +874,3 @@ class LLMCordBot(commands.Bot):
             sorted_ids = sorted(self.msg_nodes.keys())
             for msg_id in sorted_ids[: len(self.msg_nodes) - MAX_MESSAGE_NODES]:
                 self.msg_nodes.pop(msg_id, None)
-
-    def _setup_commands(self) -> None:
-        """Set up the slash command tree."""
-        config_group = app_commands.Group(name="config", description="Bot configuration commands")
-
-        @config_group.command(name="model", description="Switch the default model")
-        async def config_model(interaction: discord.Interaction, model: str) -> None:
-            if interaction.user.id not in self.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("Permission denied.", ephemeral=True)
-                return
-
-            config_manager.set_default_model(model)
-
-            channel_name = getattr(interaction.channel, "name", "DM")
-
-            logger.info("Admin %s switched default model to %s (command sent from #%s)", interaction.user.name, model, channel_name)
-
-            await interaction.response.send_message(f"[Default model set to `{model}`.]")
-
-        @config_model.autocomplete("model")
-        async def model_autocomplete(interaction: discord.Interaction, current: str) -> list[Choice[str]]:
-            default_model = self.config.chat.default_model
-            models = self.config.llm.models
-
-            choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if current.lower() in default_model.lower() else []
-            choices += [Choice(name=f"○ {model}", value=model) for model in models if model != default_model and current.lower() in model.lower()]
-
-            return choices[:25]
-
-        @config_group.command(name="reload", description="Reload config from disk")
-        async def config_reload(interaction: discord.Interaction) -> None:
-            if interaction.user.id not in self.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("Permission denied.", ephemeral=True)
-                return
-
-            config_manager.load_config()
-
-            logger.info("Admin %s reloaded the configuration", interaction.user.name)
-
-            await interaction.response.send_message("Configuration reloaded from disk.", ephemeral=True)
-
-        @config_group.command(name="channelmodel", description="Switch the model for a specific channel")
-        async def config_channel_model(interaction: discord.Interaction, model: str, channel: discord.abc.GuildChannel | None = None) -> None:
-            if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("You don't have permission to change the channel model.", ephemeral=True)
-                return
-
-            target_channel = channel or interaction.channel
-            if target_channel is None:
-                return
-
-            config_manager.set_channel_model(target_channel.id, model)
-
-            if isinstance(target_channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread, discord.StageChannel)):
-                channel_mention = target_channel.mention
-                channel_name = target_channel.name
-            else:
-                channel_mention = "Direct Messages"
-                channel_name = channel_mention
-
-            logger.info(
-                "Admin %s switched channel model to %s in #%s (%s)",
-                interaction.user.name,
-                model,
-                channel_name,
-                target_channel.id,
-            )
-
-            await interaction.response.send_message(f"[`channel_model` for {channel_mention} set to: `{model}`.]")
-
-        @config_channel_model.autocomplete("model")
-        async def config_channel_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-            default_model = config_manager.config.chat.default_model
-            channel_models = config_manager.config.chat.channel_models
-
-            current_active = channel_models.get(interaction.channel_id or 0, default_model)
-            is_overridden = interaction.channel_id in channel_models
-
-            status_text = "(current channel)" if is_overridden else "(current default)"
-
-            choices = [Choice(name=f"◉ {current_active} {status_text}", value=current_active)] if curr_str.lower() in current_active.lower() else []
-            choices += [Choice(name=f"○ {model}", value=model) for model in config_manager.config.llm.models if model != current_active and curr_str.lower() in model.lower()]
-            return choices[:25]
-
-        @config_group.command(name="set", description="Edit a specific configuration setting")
-        async def config_set(interaction: discord.Interaction, key: str, value: str) -> None:
-            if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("You don't have permission to edit configuration.", ephemeral=True)
-                return
-
-            if key not in EDITABLE_SETTINGS:
-                await interaction.response.send_message(
-                    f"Invalid setting: `{key}`. Please select one from the list.",
-                    ephemeral=True,
-                )
-                return
-
-            try:
-                current_value = config_manager.get_setting_value(key)
-            except AttributeError:
-                await interaction.response.send_message(
-                    f"Setting `{key}` not found in configuration structure.",
-                    ephemeral=True,
-                )
-                return
-
-            target_type = type(current_value)
-
-            if current_value is None:
-                await interaction.response.send_message(
-                    f"Setting `{key}` is not present in the current configuration, so its type cannot be inferred.",
-                    ephemeral=True,
-                )
-                return
-
-            parsed_value: int | bool | float | str
-
-            try:
-                if target_type is bool:
-                    if value.lower() in ("true", "1", "yes", "on"):
-                        parsed_value = True
-                    elif value.lower() in ("false", "0", "no", "off"):
-                        parsed_value = False
-                    else:
-                        error = "Invalid boolean"
-                        raise ValueError(error)
-                elif target_type is int:
-                    parsed_value = int(value)
-                elif target_type is float:
-                    parsed_value = float(value)
-                else:
-                    parsed_value = value
-
-            except ValueError:
-                await interaction.response.send_message(
-                    f"Invalid value for `{key}`. Expected type: `{target_type.__name__}`.",
-                    ephemeral=True,
-                )
-                return
-
-            # Apply update
-            config_manager.update_setting(key, parsed_value)
-
-            logger.info("Admin %s changed config %s to %s", interaction.user.name, key, parsed_value)
-            await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
-
-        @config_set.autocomplete("key")
-        async def config_set_key_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-            return [Choice(name=key, value=key) for key in EDITABLE_SETTINGS if curr_str.lower() in key.lower()][:25]
-
-        self.tree.add_command(config_group)
