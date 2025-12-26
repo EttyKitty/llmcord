@@ -13,7 +13,6 @@ EDITABLE_SETTINGS = (
     "chat.max_text",
     "chat.max_images",
     "chat.max_messages",
-    "chat.use_plain_responses",
     "chat.sanitize_response",
     "chat.use_channel_context",
     "chat.force_reply_chains",
@@ -52,7 +51,6 @@ class ChatConfig:
 
     default_model: str = ""
     channel_models: dict[int, str] = field(default_factory=dict)
-    use_plain_responses: bool = False
     sanitize_response: bool = False
     force_reply_chains: bool = False
     prefix_users: bool = False

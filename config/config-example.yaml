@@ -50,11 +50,6 @@ chat:
   # Uses `cl100k_base` encoding (GPT-4 standard).
   max_input_tokens: 16000
   
-  # When set to `true` the bot will use plaintext responses instead of embeds. 
-  # Plaintext responses have a shorter character limit so the bot's messages may split more often.
-  # Also disables streamed responses and warning messages.
-  use_plain_responses: true
-  
   # When set to `true`, the bot uses all messages in the channel for context, not the reply chain.
   use_channel_context: false
   
