@@ -8,12 +8,10 @@ OpenAI-compatible APIs.
 
 import asyncio
 import logging
-import re
 import sys
 import threading
 import time
 from base64 import b64encode
-from datetime import datetime, timezone
 from typing import Any
 
 import discord
@@ -22,19 +20,13 @@ import tiktoken
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
-from openai.types.chat import (
-    ChatCompletionContentPartParam,
-    ChatCompletionMessageParam,
-    ChatCompletionUserMessageParam,
-)
 
 from .commands import setup
 from .config import RootConfig, config_manager
 from .discord_utils import fetch_history, get_component_text, get_embed_text, is_message_allowed, is_supported_attachment
 from .logger import request_logger
-from .utils import MsgNode, build_chat_params, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, process_response_text, update_content_buffer
+from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, process_response_text, replace_placeholders, update_content_buffer
 
-REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 MAX_MESSAGE_NODES = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
@@ -130,6 +122,7 @@ class LLMCordBot(commands.Bot):
         # =============================
         # === 1. Build the Request ====
         # =============================
+
         # - Build Context
         start_time = time.perf_counter()
         provider, model = get_llm_provider_model(
@@ -137,24 +130,29 @@ class LLMCordBot(commands.Bot):
             channel_models=self.config.chat.channel_models,
             default_model=self.config.chat.default_model,
         )
-        # - Generate system prompts early to calculate their token cost
-        pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
-        post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
 
+        # - Generate system prompts early to calculate their token cost
+        pre_history = replace_placeholders(self.config.prompts.pre_history, message, self.safe_user, model, provider)
+        post_history = replace_placeholders(self.config.prompts.post_history, message, self.safe_user, model, provider)
+
+        # - Build the History
+        message_history = await self._prepare_message_history(message, self.config.chat.max_messages)
+
+        # - Build the Payload
         system_token_count = 0
         if pre_history:
             system_token_count += len(TOKENIZER.encode(pre_history))
         if post_history:
             system_token_count += len(TOKENIZER.encode(post_history))
 
-        # - Build the History
-        message_history = await self._prepare_message_history(message)
-
-        # - Build the Payload
         accept_images, accept_usernames = get_llm_specials(provider, model)
-        messages_payload = await self._build_messages_payload(
+        messages_payload = build_messages_payload(
             message_history=message_history,
-            system_token_count=system_token_count,
+            msg_nodes=self.msg_nodes,
+            max_input_tokens=self.config.chat.max_input_tokens - system_token_count,
+            max_text=self.config.chat.max_text,
+            max_images=self.config.chat.max_images,
+            prefix_users=self.config.chat.prefix_users,
             accept_images=accept_images,
             accept_usernames=accept_usernames,
         )
@@ -162,7 +160,6 @@ class LLMCordBot(commands.Bot):
         # - Insert Prompts
         if pre_history:
             messages_payload.insert(0, {"role": "system", "content": pre_history})
-
         if post_history:
             messages_payload.append({"role": "system", "content": post_history})
 
@@ -179,36 +176,7 @@ class LLMCordBot(commands.Bot):
         # 4. Cleanup
         self._prune_msg_nodes()
 
-    def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
-        """Replace dynamic placeholders in prompt strings."""
-        now = datetime.now(timezone.utc)
-        user_roles = getattr(msg.author, "roles", [])
-        user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
-        guild_emojis = getattr(msg.guild, "emojis", [])
-        guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
-
-        placeholders = {
-            "{date}": now.strftime("%B %d %Y"),
-            "{time}": now.strftime("%H:%M:%S %Z%z"),
-            "{bot_name}": self.safe_user.display_name,
-            "{bot_id}": str(self.safe_user.id),
-            "{model}": model,
-            "{provider}": provider,
-            "{user_display_name}": msg.author.display_name,
-            "{user_id}": str(msg.author.id),
-            "{user_roles}": user_roles_str,
-            "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-            "{guild_description}": msg.guild.description if msg.guild else "",
-            "{guild_emojis}": guild_emojis_str,
-            "{channel_name}": getattr(msg.channel, "name", ""),
-            "{channel_topic}": getattr(msg.channel, "topic", ""),
-            "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
-        }
-        for key, value in placeholders.items():
-            text = text.replace(key, str(value))
-        return text.strip()
-
-    async def _prepare_message_history(self, message: discord.Message) -> list[discord.Message]:
+    async def _prepare_message_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
         """Fetch and initialize the message history for context building.
 
         :param message: The triggering message.
@@ -223,7 +191,7 @@ class LLMCordBot(commands.Bot):
 
         message_history = await fetch_history(
             message=message,
-            max_messages=config.chat.max_messages,
+            max_messages=max_messages,
             use_channel_context=use_channel_context,
             bot_user=self.safe_user,
         )
@@ -286,105 +254,6 @@ class LLMCordBot(commands.Bot):
             return attachment, None
         else:
             return attachment, resp
-
-    async def _build_messages_payload(
-        self,
-        message_history: list[discord.Message],
-        system_token_count: int,
-        *,
-        accept_images: bool,
-        accept_usernames: bool,
-    ) -> list[ChatCompletionMessageParam]:
-        """Build the messages payload for the LLM, including context.
-
-        :param message_history: The history of messages to process.
-        :param system_token_count: Token count of system prompts.
-        :param accept_images: Whether the model supports image inputs.
-        :param accept_usernames: Whether the provider supports usernames in messages.
-        :return: A list of messages for the payload.
-        """
-        messages_payload: list[ChatCompletionMessageParam] = []
-        total_tokens = system_token_count
-
-        for msg in message_history:
-            if len(messages_payload) >= self.config.chat.max_messages:
-                logger.debug("Message limit reached, breaking... (%d)", self.config.chat.max_messages)
-                break
-
-            node = self.msg_nodes[msg.id]
-            if node.text is None:
-                logger.debug("Empty message found, skipping...")
-                continue
-
-            message_payload, tokens = self._create_message_payload(
-                node,
-                accept_images=accept_images,
-                accept_usernames=accept_usernames,
-            )
-
-            if message_payload is None:
-                continue
-
-            if total_tokens + tokens > self.config.chat.max_input_tokens and messages_payload:
-                logger.debug("Context limit reached, breaking...")
-                break
-
-            total_tokens += tokens
-            messages_payload.append(message_payload)
-
-        logger.debug("Context ready. Messages: %d.", len(messages_payload))
-
-        return messages_payload[::-1]
-
-    def _create_message_payload(
-        self,
-        node: MsgNode,
-        *,
-        accept_images: bool,
-        accept_usernames: bool,
-    ) -> tuple[ChatCompletionMessageParam | None, int]:
-        """Create a single message payload from a MsgNode.
-
-        :param node: The message node to process.
-        :param accept_images: Whether to include images.
-        :param accept_usernames: Whether to include usernames.
-        :return: A tuple of message_payload and token_count.
-        """
-        config = self.config
-        formatted_text = node.text[: config.chat.max_text] if node.text else ""
-
-        if config.chat.prefix_users and not accept_usernames and node.role == "user" and node.user_display_name:
-            formatted_text = f"{node.user_display_name}({node.user_id}): {formatted_text}"
-
-        text_tokens = len(TOKENIZER.encode(formatted_text))
-        images_to_add = node.images[: config.chat.max_images] if accept_images else []
-        image_tokens = len(images_to_add) * 1100
-        msg_tokens = text_tokens + image_tokens
-
-        content: str | list[ChatCompletionContentPartParam]
-        if images_to_add:
-            parts: list[ChatCompletionContentPartParam] = []
-            if formatted_text:
-                parts.append({"type": "text", "text": formatted_text})
-            parts.extend(images_to_add)
-            content = parts
-        else:
-            content = formatted_text
-
-        if not content:
-            return None, 0
-
-        message_payload: ChatCompletionMessageParam
-        if node.role == "user":
-            user_payload: ChatCompletionUserMessageParam = {"role": "user", "content": content}
-            if accept_usernames and node.user_id:
-                sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name or "")[:64]
-                user_payload["name"] = sanitized_name or str(node.user_id)
-            message_payload = user_payload
-        else:
-            message_payload = {"role": "assistant", "content": formatted_text}
-
-        return message_payload, msg_tokens
 
     async def _generate_response(
         self,
