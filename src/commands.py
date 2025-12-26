@@ -11,6 +11,7 @@ from discord.app_commands import Choice
 from discord.ext import commands
 
 from .config import EDITABLE_SETTINGS, config_manager
+from .utils import is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -160,21 +161,13 @@ class ConfigurationCog(commands.Cog):
         logger.info("Admin %s changed config %s to %s", interaction.user.name, key, parsed_value)
         await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
 
-    def _is_admin(self, user_id: int) -> bool:
-        """Check if a user has admin permissions.
-
-        :param user_id: The Discord user ID to check.
-        :return: True if the user is an admin, False otherwise.
-        """
-        return user_id in config_manager.config.discord.permissions.users.admin_ids
-
     async def _check_admin(self, interaction: discord.Interaction) -> bool:
         """Verify admin permissions and send denial message if unauthorized.
 
         :param interaction: The Discord interaction context.
         :return: True if authorized, False otherwise.
         """
-        if not self._is_admin(interaction.user.id):
+        if not is_admin(interaction.user.id):
             await interaction.response.send_message("Permission denied.", ephemeral=True)
             return False
         return True

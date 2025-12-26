@@ -20,7 +20,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
 )
 
-from .config import ConfigValue, PermissionsConfig
+from .config import ConfigValue, config_manager
 
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
@@ -88,58 +88,6 @@ def clean_response(text: str) -> str:
     return text.strip()
 
 
-def is_message_allowed(msg: discord.Message, permissions: PermissionsConfig, *, allow_dms: bool) -> bool:
-    """Check if the message author and channel are allowed based on configuration.
-
-    :param msg: The Discord message to check.
-    :param permissions: The permissions configuration object.
-    :param allow_dms: Whether the bot is allowed to respond in Direct Messages.
-    :return: True if allowed, False otherwise.
-    """
-    is_dm = msg.channel.type == discord.ChannelType.private
-
-    # 1. Admin Bypass
-    if msg.author.id in permissions.users.admin_ids:
-        return True
-
-    # 2. User/Role Validation
-    role_ids = {role.id for role in getattr(msg.author, "roles", ())}
-    allowed_users = permissions.users.allowed_ids
-    blocked_users = permissions.users.blocked_ids
-    allowed_roles = permissions.roles.allowed_ids
-    blocked_roles = permissions.roles.blocked_ids
-
-    # Determine if the user is "good" (allowed by default or explicitly)
-    allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-    is_good_user = allow_all_users or msg.author.id in allowed_users or not role_ids.isdisjoint(allowed_roles)
-
-    # Determine if the user is "bad" (not good or explicitly blocked)
-    is_bad_user = not is_good_user or msg.author.id in blocked_users or not role_ids.isdisjoint(blocked_roles)
-
-    if is_bad_user:
-        return False
-
-    # 3. Channel Validation
-    # Collect current channel ID, parent ID (for threads), and category ID
-    channel_ids = {
-        msg.channel.id,
-        getattr(msg.channel, "parent_id", None),
-        getattr(msg.channel, "category_id", None),
-    }
-    channel_ids.discard(None)  # Remove None values
-
-    allowed_channels = permissions.channels.allowed_ids
-    blocked_channels = permissions.channels.blocked_ids
-
-    # Determine if the channel is "good"
-    is_good_channel = allow_dms if is_dm else (not allowed_channels or not channel_ids.isdisjoint(allowed_channels))
-
-    # Determine if the channel is "bad"
-    is_bad_channel = not is_good_channel or not channel_ids.isdisjoint(blocked_channels)
-
-    return not is_bad_channel
-
-
 def get_llm_specials(provider: str, model: str) -> tuple[bool, bool]:
     """Resolve the LLM flags based on configuration.
 
@@ -193,34 +141,6 @@ def update_content_buffer(buffer: list[str], new_content: str, max_len: int) -> 
     if not buffer or len(buffer[-1]) + len(new_content) > max_len:
         buffer.append("")
     buffer[-1] += new_content
-
-
-def get_embed_text(embed: discord.Embed) -> str:
-    """Extract text from an embed.
-
-    :param embed: The Discord embed to process.
-    :return: A string containing the title, description, and footer text.
-    """
-    fields = [embed.title, embed.description, getattr(embed.footer, "text", None)]
-    return "\n".join(filter(None, fields))
-
-
-def get_component_text(component: discord.Component) -> str:
-    """Extract text from a component.
-
-    :param component: The Discord component to process.
-    :return: The text content if the component is a TextDisplay, otherwise an empty string.
-    """
-    return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
-
-
-def is_supported_attachment(attachment: discord.Attachment) -> bool:
-    """Check if attachment type is supported.
-
-    :param attachment: The Discord attachment to check.
-    :return: True if the attachment is a text or image file, False otherwise.
-    """
-    return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
 
 
 def process_response_text(text: str, *, sanitize: bool) -> str:
@@ -354,3 +274,12 @@ def build_chat_params(
         "extra_query": extra_query if isinstance(extra_query, dict) else None,
         "extra_body": extra_body,
     }
+
+
+def is_admin(user_id: int) -> bool:
+    """Check if a user has admin permissions.
+
+    :param user_id: The Discord user ID to check.
+    :return: True if the user is an admin, False otherwise.
+    """
+    return user_id in config_manager.config.discord.permissions.users.admin_ids

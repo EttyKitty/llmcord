@@ -30,8 +30,9 @@ from openai.types.chat import (
 
 from .commands import setup
 from .config import RootConfig, config_manager
+from .discord_utils import fetch_history, get_component_text, get_embed_text, is_message_allowed, is_supported_attachment
 from .logger import request_logger
-from .utils import MsgNode, build_chat_params, extract_chunk_content, get_component_text, get_embed_text, get_llm_provider_model, get_llm_specials, get_provider_config, is_message_allowed, is_supported_attachment, process_response_text, update_content_buffer
+from .utils import MsgNode, build_chat_params, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, process_response_text, update_content_buffer
 
 REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 MAX_MESSAGE_NODES = 500
@@ -219,87 +220,17 @@ class LLMCordBot(commands.Bot):
             use_channel_context = False
 
         logger.debug("Initializing message nodes...")
-        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context=use_channel_context)
+
+        message_history = await fetch_history(
+            message=message,
+            max_messages=config.chat.max_messages,
+            use_channel_context=use_channel_context,
+            bot_user=self.safe_user,
+        )
+
         await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
 
         return message_history
-
-    async def _fetch_history(self, message: discord.Message, max_messages: int, *, use_channel_context: bool) -> list[discord.Message]:
-        """Retrieve message history either via channel history or reply chain.
-
-        :param message: The trigger message.
-        :param max_messages: Maximum number of messages to fetch.
-        :param use_channel_context: Whether to use linear channel history.
-        :return: A list of Discord messages.
-        """
-        logger.debug("Building message history... (Mode: %s)", "Channel History" if use_channel_context else "Reply Chain")
-
-        if use_channel_context:
-            return await self._fetch_channel_history(message, max_messages)
-
-        return await self._fetch_reply_chain_history(message, max_messages)
-
-    async def _fetch_channel_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
-        """Fetch linear message history from the channel."""
-        message_history = [message]
-        message_history.extend([msg async for msg in message.channel.history(limit=max_messages - 1, before=message)])
-        return message_history[:max_messages]
-
-    async def _fetch_reply_chain_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
-        """Fetch message history by traversing the reply chain."""
-        message_history: list[discord.Message] = []
-        history_ids: set[int] = set()
-        current_msg: discord.Message | None = message
-
-        while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
-            history_ids.add(current_msg.id)
-            message_history.append(current_msg)
-
-            current_msg = await self._resolve_next_message(current_msg)
-
-        return message_history
-
-    async def _resolve_next_message(self, current_msg: discord.Message) -> discord.Message | None:
-        """Determine the next message in the reply chain."""
-        if current_msg.reference and current_msg.reference.message_id:
-            return await self._fetch_referenced_message(current_msg)
-
-        if self.safe_user.mention not in current_msg.content:
-            return await self._fetch_previous_message(current_msg)
-
-        return None
-
-    async def _fetch_referenced_message(self, current_msg: discord.Message) -> discord.Message | None:
-        """Fetch the message referenced by the current message."""
-        if not current_msg.reference or not current_msg.reference.message_id:
-            return None
-
-        try:
-            next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
-        except (discord.NotFound, discord.HTTPException):
-            logger.exception("Failed to fetch parent for message %d", current_msg.reference.message_id)
-            return None
-        else:
-            if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
-                next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
-
-            return next_msg
-
-    async def _fetch_previous_message(self, current_msg: discord.Message) -> discord.Message | None:
-        """Fetch the immediately preceding message in the channel if it matches criteria."""
-        async for prev in current_msg.channel.history(before=current_msg, limit=1):
-            is_dm = current_msg.channel.type == discord.ChannelType.private
-            allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-
-            if prev.type not in allowed_types:
-                continue
-
-            is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
-
-            if is_expected_author:
-                return prev
-
-        return None
 
     async def _init_msg_node(self, msg: discord.Message) -> None:
         """Initialize a MsgNode for a message, processing attachments and text sources.
