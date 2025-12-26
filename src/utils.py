@@ -9,23 +9,29 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import discord
 import httpx
+import tiktoken
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionChunk,
     ChatCompletionContentPartImageParam,
+    ChatCompletionContentPartParam,
     ChatCompletionMessageParam,
+    ChatCompletionUserMessageParam,
 )
 
 from .config import ConfigValue, config_manager
 
+TOKENIZER = tiktoken.get_encoding("cl100k_base")
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
 REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
 REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 TYPOGRAPHY_MAP = str.maketrans(
@@ -283,3 +289,142 @@ def is_admin(user_id: int) -> bool:
     :return: True if the user is an admin, False otherwise.
     """
     return user_id in config_manager.config.discord.permissions.users.admin_ids
+
+
+def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.ClientUser, model: str, provider: str) -> str:
+    """Replace dynamic placeholders in prompt strings."""
+    now = datetime.now(timezone.utc)
+    user_roles = getattr(msg.author, "roles", [])
+    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
+    guild_emojis = getattr(msg.guild, "emojis", [])
+    guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
+
+    placeholders = {
+        "{date}": now.strftime("%B %d %Y"),
+        "{time}": now.strftime("%H:%M:%S %Z%z"),
+        "{bot_name}": bot_user.display_name,
+        "{bot_id}": str(bot_user.id),
+        "{model}": model,
+        "{provider}": provider,
+        "{user_display_name}": msg.author.display_name,
+        "{user_id}": str(msg.author.id),
+        "{user_roles}": user_roles_str,
+        "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
+        "{guild_description}": msg.guild.description if msg.guild else "",
+        "{guild_emojis}": guild_emojis_str,
+        "{channel_name}": getattr(msg.channel, "name", ""),
+        "{channel_topic}": getattr(msg.channel, "topic", ""),
+        "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
+    }
+    for key, value in placeholders.items():
+        text = text.replace(key, str(value))
+    return text.strip()
+
+
+def create_message_payload(
+    node: MsgNode,
+    max_text: int,
+    max_images: int,
+    *,
+    prefix_users: bool,
+    accept_images: bool,
+    accept_usernames: bool,
+) -> tuple[ChatCompletionMessageParam | None, int]:
+    """Create a single message payload from a MsgNode.
+
+    :param node: The message node to process.
+    :param max_text: Maximum characters for text content.
+    :param max_images: Maximum number of images to include.
+    :param prefix_users: Whether to prefix user messages with their name.
+    :param accept_images: Whether the model supports image inputs.
+    :param accept_usernames: Whether the provider supports usernames in messages.
+    :return: A tuple of (message_payload, token_count).
+    """
+    formatted_text = node.text[:max_text] if node.text else ""
+
+    if prefix_users and not accept_usernames and node.role == "user" and node.user_display_name:
+        formatted_text = f"{node.user_display_name}({node.user_id}): {formatted_text}"
+
+    text_tokens = len(TOKENIZER.encode(formatted_text))
+    images_to_add = node.images[:max_images] if accept_images else []
+    image_tokens = len(images_to_add) * 1100
+    msg_tokens = text_tokens + image_tokens
+
+    content: str | list[ChatCompletionContentPartParam]
+    if images_to_add:
+        parts: list[ChatCompletionContentPartParam] = []
+        if formatted_text:
+            parts.append({"type": "text", "text": formatted_text})
+        parts.extend(images_to_add)
+        content = parts
+    else:
+        content = formatted_text
+
+    if not content:
+        return None, 0
+
+    message_payload: ChatCompletionMessageParam
+    if node.role == "user":
+        user_payload: ChatCompletionUserMessageParam = {"role": "user", "content": content}
+        if accept_usernames and node.user_id:
+            sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name or "")[:64]
+            user_payload["name"] = sanitized_name or str(node.user_id)
+        message_payload = user_payload
+    else:
+        message_payload = {"role": "assistant", "content": formatted_text}
+
+    return message_payload, msg_tokens
+
+
+def build_messages_payload(
+    message_history: list[discord.Message],
+    msg_nodes: dict[int, MsgNode],
+    max_input_tokens: int,
+    max_text: int,
+    max_images: int,
+    *,
+    prefix_users: bool,
+    accept_images: bool,
+    accept_usernames: bool,
+) -> list[ChatCompletionMessageParam]:
+    """Build the messages payload for the LLM, including context.
+
+    :param message_history: The history of messages to process.
+    :param msg_nodes: The dictionary of processed message nodes.
+    :param max_input_tokens: Maximum total tokens allowed.
+    :param max_text: Maximum characters per message.
+    :param max_images: Maximum images per message.
+    :param accept_images: Whether the model supports image inputs.
+    :param accept_usernames: Whether the provider supports usernames.
+    :return: A list of messages for the payload.
+    """
+    messages_payload: list[ChatCompletionMessageParam] = []
+    total_tokens = 0
+
+    for msg in message_history:
+        node = msg_nodes.get(msg.id)
+        if not node or node.text is None:
+            logger.debug("Empty or missing message node found, skipping...")
+            continue
+
+        message_payload, tokens = create_message_payload(
+            node=node,
+            max_text=max_text,
+            max_images=max_images,
+            prefix_users=prefix_users,
+            accept_images=accept_images,
+            accept_usernames=accept_usernames,
+        )
+
+        if message_payload is None:
+            continue
+
+        if total_tokens + tokens > max_input_tokens and messages_payload:
+            logger.debug("Context limit reached, breaking...")
+            break
+
+        total_tokens += tokens
+        messages_payload.append(message_payload)
+
+    logger.debug("Context ready. Messages: %d.", len(messages_payload))
+    return messages_payload[::-1]
