@@ -1,49 +1,58 @@
+"""LLMCord Bot Main Module.
+
+This module contains the core implementation of the LLMCord Discord bot.
+It handles the bot's lifecycle, event processing, message validation,
+context construction, and interaction with various LLM providers using
+OpenAI-compatible APIs.
+"""
+
 import asyncio
-import os
+import logging
 import re
+import sys
 import threading
 import time
 from base64 import b64encode
-from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any
 
 import discord
 import httpx
 import tiktoken
-from discord import app_commands
-from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionContentPartParam,
-    ChatCompletionContentPartTextParam,
     ChatCompletionMessageParam,
     ChatCompletionUserMessageParam,
 )
 
-from main import logger
-
-from .config import EDITABLE_SETTINGS, RootConfig, config_manager
+from .commands import setup
+from .config import RootConfig, config_manager
 from .logger import request_logger
-from .utils import MsgNode, clean_response
+from .utils import MsgNode, build_chat_params, extract_chunk_content, get_component_text, get_embed_text, get_llm_provider_model, get_llm_specials, get_provider_config, is_message_allowed, is_supported_attachment, process_response_text, update_content_buffer
 
-# Constants
 REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
-REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
-VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
-PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-EMBED_COLOR_COMPLETE = discord.Color.dark_green()
-EMBED_COLOR_INCOMPLETE = discord.Color.orange()
-STREAMING_INDICATOR = " ⚪"
-EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 
+logger = logging.getLogger(__name__)
+
+
 class LLMCordBot(commands.Bot):
-    """The main bot class for llmcord, encapsulating state and logic."""
+    """The main bot class for llmcord, encapsulating state and logic.
+
+    This class manages the bot's lifecycle, message processing, conversation
+    context building, and interaction with LLM providers via OpenAI-compatible APIs.
+
+    :ivar openai_clients: Cache of AsyncOpenAI clients keyed by base URL.
+    :ivar msg_nodes: Cache of MsgNode objects keyed by message ID.
+    :ivar last_task_time: Timestamp of the last processed task.
+    :ivar httpx_client: Shared HTTP client for external requests.
+    :ivar exit_code: Exit code.
+    """
 
     @property
     def config(self) -> RootConfig:
@@ -64,6 +73,7 @@ class LLMCordBot(commands.Bot):
         if self.user is None:
             error = "Bot user not initialized!"
             raise RuntimeError(error)
+
         return self.user
 
     def __init__(self, intents: discord.Intents, activity: discord.CustomActivity) -> None:
@@ -73,13 +83,12 @@ class LLMCordBot(commands.Bot):
         :param activity: Custom activity status for the bot.
         """
         super().__init__(command_prefix="?", intents=intents, activity=activity)
+
         self.openai_clients: dict[str, AsyncOpenAI] = {}
         self.msg_nodes: dict[int, MsgNode] = {}
         self.last_task_time: float = 0.0
         self.httpx_client = httpx.AsyncClient()
-
-        # Register slash commands
-        self._setup_commands()
+        self.exit_code: int = 0
 
     async def close(self) -> None:
         """Cleanup resources before shutting down."""
@@ -88,190 +97,86 @@ class LLMCordBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Set up internal discord.py hook for asynchronous setup."""
+        await setup(self)
         await self.tree.sync()
+
         if client_id := self.config.discord.client_id:
-            logger.info(f"Bot invite URL: https://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot")
-        logger.info(f"Bot ready. Logged in as {self.safe_user}")
+            logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
 
-    def get_openai_client(self, provider_config: dict[str, Any]) -> AsyncOpenAI:
-        """Retrieve or initialize an OpenAI-compatible client for a specific provider.
+        logger.info("Bot ready. Logged in as %s", self.safe_user)
 
-        :param provider_config: The configuration dictionary for the provider.
-        :return: An AsyncOpenAI client instance.
+    async def on_message(self, message: discord.Message) -> None:
+        """Event handler for new messages. Orchestrates the response flow.
+
+        :param message: The incoming Discord message to process.
         """
-        base_url = provider_config["base_url"]
-        if base_url not in self.openai_clients:
-            self.openai_clients[base_url] = AsyncOpenAI(
-                base_url=base_url,
-                api_key=provider_config.get("api_key", "sk-no-key-required"),
-                http_client=self.httpx_client,
-            )
-        return self.openai_clients[base_url]
-
-    def _is_message_allowed(self, msg: discord.Message) -> bool:
-        """Check if the message author and channel are allowed based on configuration.
-
-        :param msg: The Discord message to check.
-        :return: True if allowed, False otherwise.
-        """
-        is_dm = msg.channel.type == discord.ChannelType.private
-        permissions = self.config.discord.permissions
-
-        if msg.author.id in permissions.users.admin_ids:
-            return True
-
-        role_ids = {role.id for role in getattr(msg.author, "roles", ())}
-        allowed_users = permissions.users.allowed_ids
-        blocked_users = permissions.users.blocked_ids
-        allowed_roles = permissions.roles.allowed_ids
-        blocked_roles = permissions.roles.blocked_ids
-
-        allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-        is_good_user = allow_all_users or msg.author.id in allowed_users or any(rid in allowed_roles for rid in role_ids)
-        is_bad_user = not is_good_user or msg.author.id in blocked_users or any(rid in blocked_roles for rid in role_ids)
-
-        if is_bad_user:
-            return False
-
-        channel_ids = set(
-            filter(
-                None,
-                (
-                    msg.channel.id,
-                    getattr(msg.channel, "parent_id", None),
-                    getattr(msg.channel, "category_id", None),
-                ),
-            ),
-        )
-        allowed_channels = permissions.channels.allowed_ids
-        blocked_channels = permissions.channels.blocked_ids
-        allow_dms = self.config.discord.allow_dms
-
-        is_good_channel = allow_dms if is_dm else (not allowed_channels or any(cid in allowed_channels for cid in channel_ids))
-        is_bad_channel = not is_good_channel or any(cid in blocked_channels for cid in channel_ids)
-
-        return not is_bad_channel
-
-    async def _fetch_history(self, message: discord.Message, max_messages: int, use_channel_context: bool) -> list[discord.Message]:
-        """Retrieve message message_history either via channel message_history or reply chain.
-
-        :param message: The trigger message.
-        :param max_messages: Maximum number of messages to fetch.
-        :param use_channel_context: Whether to use linear channel message_history.
-        :return: A list of Discord messages.
-        """
-        message_history: list[discord.Message] = []
-        history_ids: set[int] = set()
-        current_msg: discord.Message | None = message
-
-        logger.debug(f"Building message history... (Mode: {'Channel History' if use_channel_context else 'Reply Chain'})")
-
-        if use_channel_context:
-            message_history = [message]
-            async for msg in message.channel.history(limit=max_messages - 1, before=message):
-                message_history.append(msg)
-            return message_history[:max_messages]
-        while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
-            history_ids.add(current_msg.id)
-            message_history.append(current_msg)
-            next_msg = None
-
-            if current_msg.reference and current_msg.reference.message_id:
-                try:
-                    next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
-
-                    if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
-                        next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
-
-                    current_msg = next_msg
-                except (discord.NotFound, discord.HTTPException):
-                    logger.exception(f"Failed to fetch parent for message {current_msg.reference.message_id}")
-                    break
-
-            elif self.safe_user.mention not in current_msg.content:
-                async for prev in current_msg.channel.history(before=current_msg, limit=1):
-                    is_dm = current_msg.channel.type == discord.ChannelType.private
-                    allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-                    is_valid_type = prev.type in allowed_types
-
-                    is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
-
-                    if is_valid_type and is_expected_author:
-                        next_msg = prev
-                    break
-
-            if next_msg:
-                current_msg = next_msg
-            else:
-                break
-        return message_history
-
-    async def _init_msg_node(self, msg: discord.Message) -> None:
-        """Initialize a MsgNode for a message, processing attachments and text sources.
-
-        :param msg: The Discord message to process.
-        """
-        node = self.msg_nodes.setdefault(msg.id, MsgNode())
-        if node.text is not None:
+        # =============================
+        # ======== 0. Gatekeep ========
+        # =============================
+        if message.author.bot:
             return
 
-        async with node.lock:
-            if node.text is not None:
-                return
+        is_dm = message.channel.type == discord.ChannelType.private
+        is_mentioned = self.safe_user in message.mentions
 
-            text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
-            text_parts.extend(self._get_embed_text(e) for e in msg.embeds)
-            text_parts.extend(self._get_component_text(c) for c in msg.components)
+        if not (is_dm or is_mentioned):
+            return
 
-            to_download = [a for a in msg.attachments if self._is_supported_attachment(a)]
-            downloads = await asyncio.gather(*(self._download_attachment(a) for a in to_download))
+        if not is_message_allowed(message, self.config.discord.permissions, allow_dms=self.config.discord.allow_dms):
+            logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
+            return
 
-            node.images = []
-            for attachment, resp in downloads:
-                if resp is None:
-                    node.has_bad_attachments = True
-                    continue
+        # =============================
+        # === 1. Build the Request ====
+        # =============================
+        # - Build Context
+        start_time = time.perf_counter()
+        provider, model = get_llm_provider_model(
+            channel_id=message.channel.id,
+            channel_models=self.config.chat.channel_models,
+            default_model=self.config.chat.default_model,
+        )
+        # - Generate system prompts early to calculate their token cost
+        pre_history = self._replace_placeholders(self.config.prompts.pre_history, message, model, provider)
+        post_history = self._replace_placeholders(self.config.prompts.post_history, message, model, provider)
 
-                content_type = attachment.content_type or ""
-                if content_type.startswith("text"):
-                    text_parts.append(resp.text)
-                elif content_type.startswith("image"):
-                    base64_data = b64encode(resp.content).decode()
-                    node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
+        system_token_count = 0
+        if pre_history:
+            system_token_count += len(TOKENIZER.encode(pre_history))
+        if post_history:
+            system_token_count += len(TOKENIZER.encode(post_history))
 
-            node.text = "\n".join(filter(None, text_parts))
-            node.role = "assistant" if msg.author == self.safe_user else "user"
-            node.user_id = msg.author.id if node.role == "user" else None
+        # - Build the History
+        message_history = await self._prepare_message_history(message)
 
-            author = msg.author
-            if msg.guild and not isinstance(author, discord.Member):
-                author = msg.guild.get_member(author.id) or author
+        # - Build the Payload
+        accept_images, accept_usernames = get_llm_specials(provider, model)
+        messages_payload = await self._build_messages_payload(
+            message_history=message_history,
+            system_token_count=system_token_count,
+            accept_images=accept_images,
+            accept_usernames=accept_usernames,
+        )
 
-            node.user_display_name = author.display_name if node.role == "user" else None
-            node.has_bad_attachments = len(msg.attachments) > len(to_download)
+        # - Insert Prompts
+        if pre_history:
+            messages_payload.insert(0, {"role": "system", "content": pre_history})
 
-    def _get_embed_text(self, embed: discord.Embed) -> str:
-        """Extract text from an embed."""
-        fields = [embed.title, embed.description, getattr(embed.footer, "text", None)]
-        return "\n".join(filter(None, fields))
+        if post_history:
+            messages_payload.append({"role": "system", "content": post_history})
 
-    def _get_component_text(self, component: discord.Component) -> str:
-        """Extract text from a component."""
-        return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
+        # - Finish the Payload
+        provider_config, openai_client = get_provider_config(provider=provider, providers_config=self.config.llm.providers, client_cache=self.openai_clients, httpx_client=self.httpx_client)
+        chat_params = build_chat_params(model=model, messages=messages_payload, provider=provider, provider_config=provider_config, llm_models_config=self.config.llm.models)
 
-    def _is_supported_attachment(self, attachment: discord.Attachment) -> bool:
-        """Check if attachment type is supported."""
-        return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
+        elapsed_time = time.perf_counter() - start_time
+        logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
 
-    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
-        """Download an attachment."""
-        try:
-            resp = await self.httpx_client.get(attachment.url)
-            resp.raise_for_status()
-            return attachment, resp
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
-            logger.warning(f"Failed to download attachment {attachment.filename} ({attachment.url}): {e}")
-            return attachment, None
+        # 2. Send the Request + 3. Get the Response (Fuck, why are they in one function)
+        await self._generate_response(message, openai_client, chat_params)
+
+        # 4. Cleanup
+        self._prune_msg_nodes()
 
     def _replace_placeholders(self, text: str, msg: discord.Message, model: str, provider: str) -> str:
         """Replace dynamic placeholders in prompt strings."""
@@ -302,457 +207,393 @@ class LLMCordBot(commands.Bot):
             text = text.replace(key, str(value))
         return text.strip()
 
-    async def on_message(self, message: discord.Message) -> None:
-        """Event handler for new messages. Orchestrates the response flow.
+    async def _prepare_message_history(self, message: discord.Message) -> list[discord.Message]:
+        """Fetch and initialize the message history for context building.
 
-        :param message: The incoming Discord message to process.
+        :param message: The triggering message.
+        :return: A list of initialized message nodes.
         """
-        if not self.safe_user or message.author.bot:
-            return
-
-        is_dm = message.channel.type == discord.ChannelType.private
-        if not is_dm and self.safe_user not in message.mentions:
-            return
-
-        if not self._is_message_allowed(message):
-            logger.info(f"Message blocked. User: {message.author.name} ID: {message.author.id}")
-            return
-
-        start_time = time.perf_counter()
         config = self.config
-
-        # 1. Configuration Resolution
-        provider_slash_model = config.chat.channel_models.get(message.channel.id, config.chat.default_model)
-        try:
-            provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-            provider_config = config.llm.providers[provider]
-            openai_client = self.get_openai_client(provider_config)
-        except (ValueError, KeyError):
-            logger.exception(f"Failed to load provider configuration for {provider_slash_model}!")
-            return
-
-        accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-        accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
-
-        # 2. Context Building
         use_channel_context = config.chat.use_channel_context
         if use_channel_context and config.chat.force_reply_chains and message.reference:
             use_channel_context = False
 
         logger.debug("Initializing message nodes...")
-        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context)
+        message_history = await self._fetch_history(message, config.chat.max_messages, use_channel_context=use_channel_context)
         await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
 
-        logger.debug("Building context...")
-        messages_payload: list[ChatCompletionMessageParam] = []
-        user_warnings: set[str] = set()
-        total_tokens = 0
-        total_images = 0
+        return message_history
 
-        logger.debug("Replacing placeholders...")
-        pre_history = self._replace_placeholders(config.prompts.pre_history, message, model, provider)
-        post_history = self._replace_placeholders(config.prompts.post_history, message, model, provider)
-        if pre_history:
-            total_tokens += len(TOKENIZER.encode(pre_history))
-        if post_history:
-            total_tokens += len(TOKENIZER.encode(post_history))
+    async def _fetch_history(self, message: discord.Message, max_messages: int, *, use_channel_context: bool) -> list[discord.Message]:
+        """Retrieve message history either via channel history or reply chain.
+
+        :param message: The trigger message.
+        :param max_messages: Maximum number of messages to fetch.
+        :param use_channel_context: Whether to use linear channel history.
+        :return: A list of Discord messages.
+        """
+        logger.debug("Building message history... (Mode: %s)", "Channel History" if use_channel_context else "Reply Chain")
+
+        if use_channel_context:
+            return await self._fetch_channel_history(message, max_messages)
+
+        return await self._fetch_reply_chain_history(message, max_messages)
+
+    async def _fetch_channel_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
+        """Fetch linear message history from the channel."""
+        message_history = [message]
+        message_history.extend([msg async for msg in message.channel.history(limit=max_messages - 1, before=message)])
+        return message_history[:max_messages]
+
+    async def _fetch_reply_chain_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
+        """Fetch message history by traversing the reply chain."""
+        message_history: list[discord.Message] = []
+        history_ids: set[int] = set()
+        current_msg: discord.Message | None = message
+
+        while current_msg and len(message_history) < max_messages and current_msg.id not in history_ids:
+            history_ids.add(current_msg.id)
+            message_history.append(current_msg)
+
+            current_msg = await self._resolve_next_message(current_msg)
+
+        return message_history
+
+    async def _resolve_next_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Determine the next message in the reply chain."""
+        if current_msg.reference and current_msg.reference.message_id:
+            return await self._fetch_referenced_message(current_msg)
+
+        if self.safe_user.mention not in current_msg.content:
+            return await self._fetch_previous_message(current_msg)
+
+        return None
+
+    async def _fetch_referenced_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Fetch the message referenced by the current message."""
+        if not current_msg.reference or not current_msg.reference.message_id:
+            return None
+
+        try:
+            next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+        except (discord.NotFound, discord.HTTPException):
+            logger.exception("Failed to fetch parent for message %d", current_msg.reference.message_id)
+            return None
+        else:
+            if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable):
+                next_msg = current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
+
+            return next_msg
+
+    async def _fetch_previous_message(self, current_msg: discord.Message) -> discord.Message | None:
+        """Fetch the immediately preceding message in the channel if it matches criteria."""
+        async for prev in current_msg.channel.history(before=current_msg, limit=1):
+            is_dm = current_msg.channel.type == discord.ChannelType.private
+            allowed_types = (discord.MessageType.default, discord.MessageType.reply)
+
+            if prev.type not in allowed_types:
+                continue
+
+            is_expected_author = prev.author in (self.safe_user, current_msg.author) if is_dm else prev.author == current_msg.author
+
+            if is_expected_author:
+                return prev
+
+        return None
+
+    async def _init_msg_node(self, msg: discord.Message) -> None:
+        """Initialize a MsgNode for a message, processing attachments and text sources.
+
+        :param msg: The Discord message to process.
+        """
+        node = self.msg_nodes.setdefault(msg.id, MsgNode())
+        if node.text is not None:
+            return
+
+        async with node.lock:
+            if node.text is not None:
+                return
+
+            text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
+            text_parts.extend(get_embed_text(error) for error in msg.embeds)
+            text_parts.extend(get_component_text(c) for c in msg.components)
+
+            to_download = [a for a in msg.attachments if is_supported_attachment(a)]
+            downloads = await asyncio.gather(*(self._download_attachment(a) for a in to_download))
+
+            node.images = []
+            for attachment, resp in downloads:
+                if resp is None:
+                    node.has_bad_attachments = True
+                    continue
+
+                content_type = attachment.content_type or ""
+                if content_type.startswith("text"):
+                    text_parts.append(resp.text)
+                elif content_type.startswith("image"):
+                    base64_data = b64encode(resp.content).decode()
+                    node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
+
+            node.text = "\n".join(filter(None, text_parts))
+            node.role = "assistant" if msg.author == self.safe_user else "user"
+            node.user_id = msg.author.id if node.role == "user" else None
+
+            author = msg.author
+            if msg.guild and not isinstance(author, discord.Member):
+                author = msg.guild.get_member(author.id) or author
+
+            node.user_display_name = author.display_name if node.role == "user" else None
+            node.has_bad_attachments = len(msg.attachments) > len(to_download)
+
+    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
+        """Download an attachment."""
+        try:
+            resp = await self.httpx_client.get(attachment.url)
+            resp.raise_for_status()
+        except (httpx.HTTPError, httpx.TimeoutException) as error:
+            logger.warning("Failed to download attachment %s (%s): %s", attachment.filename, attachment.url, error)
+            return attachment, None
+        else:
+            return attachment, resp
+
+    async def _build_messages_payload(
+        self,
+        message_history: list[discord.Message],
+        system_token_count: int,
+        *,
+        accept_images: bool,
+        accept_usernames: bool,
+    ) -> list[ChatCompletionMessageParam]:
+        """Build the messages payload for the LLM, including context.
+
+        :param message_history: The history of messages to process.
+        :param system_token_count: Token count of system prompts.
+        :param accept_images: Whether the model supports image inputs.
+        :param accept_usernames: Whether the provider supports usernames in messages.
+        :return: A list of messages for the payload.
+        """
+        messages_payload: list[ChatCompletionMessageParam] = []
+        total_tokens = system_token_count
 
         for msg in message_history:
-            if len(messages_payload) >= config.chat.max_messages:
-                logger.debug(f"Message limit reached, breaking... ({config.chat.max_messages})")
+            if len(messages_payload) >= self.config.chat.max_messages:
+                logger.debug("Message limit reached, breaking... (%d)", self.config.chat.max_messages)
                 break
 
             node = self.msg_nodes[msg.id]
-
             if node.text is None:
                 logger.debug("Empty message found, skipping...")
                 continue
 
-            formatted_text = node.text[: config.chat.max_text]
+            message_payload, tokens = self._create_message_payload(
+                node,
+                accept_images=accept_images,
+                accept_usernames=accept_usernames,
+            )
 
-            if config.chat.prefix_users and not accept_usernames and node.role == "user" and node.user_display_name:
-                formatted_text = f"{node.user_display_name}({node.user_id}): {formatted_text}"
+            if message_payload is None:
+                continue
 
-            text_tokens = len(TOKENIZER.encode(formatted_text))
-            image_tokens = len(node.images[: config.chat.max_images]) * 1100 if accept_images else 0
-            msg_tokens = text_tokens + image_tokens
-
-            if total_tokens + msg_tokens > config.chat.max_input_tokens and messages_payload:
-                user_warnings.add("⚠️ Context limit reached (older messages trimmed)")
+            if total_tokens + tokens > self.config.chat.max_input_tokens and messages_payload:
+                logger.debug("Context limit reached, breaking...")
                 break
 
-            total_tokens += msg_tokens
+            total_tokens += tokens
+            messages_payload.append(message_payload)
 
-            content: str | list[ChatCompletionContentPartParam]
-            images_to_add = node.images[: config.chat.max_images] if accept_images else []
+        logger.debug("Context ready. Messages: %d.", len(messages_payload))
 
-            if images_to_add:
-                parts: list[ChatCompletionContentPartParam] = []
+        return messages_payload[::-1]
 
-                if formatted_text:
-                    text_part: ChatCompletionContentPartTextParam = {"type": "text", "text": formatted_text}
-                    parts.append(text_part)
+    def _create_message_payload(
+        self,
+        node: MsgNode,
+        *,
+        accept_images: bool,
+        accept_usernames: bool,
+    ) -> tuple[ChatCompletionMessageParam | None, int]:
+        """Create a single message payload from a MsgNode.
 
-                total_images = len(images_to_add)
-                parts.extend(images_to_add)
-                content = parts
-            else:
-                content = formatted_text
+        :param node: The message node to process.
+        :param accept_images: Whether to include images.
+        :param accept_usernames: Whether to include usernames.
+        :return: A tuple of message_payload and token_count.
+        """
+        config = self.config
+        formatted_text = node.text[: config.chat.max_text] if node.text else ""
 
-            if content:
-                if node.role == "user":
-                    user_payload: ChatCompletionUserMessageParam = {"role": "user", "content": content}
-                    if accept_usernames and node.user_id:
-                        sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name or "")[:64]
-                        user_payload["name"] = sanitized_name or str(node.user_id)
-                    messages_payload.append(user_payload)
-                elif node.role == "assistant":
-                    messages_payload.append({"role": "assistant", "content": formatted_text})
+        if config.chat.prefix_users and not accept_usernames and node.role == "user" and node.user_display_name:
+            formatted_text = f"{node.user_display_name}({node.user_id}): {formatted_text}"
 
-            if len(node.text or "") > config.chat.max_text:
-                user_warnings.add(f"⚠️ Max {config.chat.max_text:,} characters per message")
-        logger.debug(f"Context ready. Messages: {len(messages_payload)}. Images: {total_images}")
+        text_tokens = len(TOKENIZER.encode(formatted_text))
+        images_to_add = node.images[: config.chat.max_images] if accept_images else []
+        image_tokens = len(images_to_add) * 1100
+        msg_tokens = text_tokens + image_tokens
 
-        logger.debug("Inserting prompts...")
-        if pre_history:
-            messages_payload.append({"role": "system", "content": pre_history})
-        if post_history:
-            messages_payload.insert(0, {"role": "system", "content": post_history})
+        content: str | list[ChatCompletionContentPartParam]
+        if images_to_add:
+            parts: list[ChatCompletionContentPartParam] = []
+            if formatted_text:
+                parts.append({"type": "text", "text": formatted_text})
+            parts.extend(images_to_add)
+            content = parts
+        else:
+            content = formatted_text
 
-        elapsed_time = time.perf_counter() - start_time
-        logger.info(f"Request prepared in {elapsed_time:.4f} seconds!")
+        if not content:
+            return None, 0
 
-        # 4. Generation
-        await self._generate_response(message, openai_client, provider, model, messages_payload[::-1], provider_config, user_warnings)
+        message_payload: ChatCompletionMessageParam
+        if node.role == "user":
+            user_payload: ChatCompletionUserMessageParam = {"role": "user", "content": content}
+            if accept_usernames and node.user_id:
+                sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name or "")[:64]
+                user_payload["name"] = sanitized_name or str(node.user_id)
+            message_payload = user_payload
+        else:
+            message_payload = {"role": "assistant", "content": formatted_text}
 
-        # 5. Cleanup
-        self._prune_msg_nodes()
+        return message_payload, msg_tokens
 
     async def _generate_response(
         self,
         trigger_msg: discord.Message,
         client: AsyncOpenAI,
-        provider: str,
-        model: str,
-        messages: Sequence[ChatCompletionMessageParam],
-        provider_config: dict[str, Any],
-        warnings: set[str],
+        chat_params: dict[str, Any],
     ) -> None:
-        """Handle the streaming of the LLM response back to Discord."""
-        start_time = time.perf_counter()
+        """Handle the streaming of the LLM response back to Discord.
 
-        use_plain = self.config.chat.use_plain_responses
-        max_message_length = 4000 if use_plain else (4096 - len(STREAMING_INDICATOR))
+        :param trigger_msg: The message that triggered the response.
+        :param client: The initialized OpenAI client.
+        :param chat_params: The parameters for the API call.
+        """
+        start_time = time.perf_counter()
+        max_len = 4000
+
         response_msgs: list[discord.Message] = []
         response_contents: list[str] = []
 
-        class ChatParams(TypedDict):
-            model: str
-            messages: Sequence[ChatCompletionMessageParam]
-            stream: Literal[True]
-            extra_headers: NotRequired[dict[str, str] | None]
-            extra_query: NotRequired[dict[str, object] | None]
-            extra_body: NotRequired[dict[str, object] | None]
-
-        model_overrides: dict[str, object] = self.config.llm.models.get(f"{provider}/{model}") or {}
-        extra_headers = provider_config.get("extra_headers")
-        extra_query = provider_config.get("extra_query")
-        extra_body: dict[str, object] = (provider_config.get("extra_body") or {}) | model_overrides
-
-        openai_params: ChatParams = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            "extra_headers": extra_headers if isinstance(extra_headers, dict) else None,
-            "extra_query": extra_query if isinstance(extra_query, dict) else None,
-            "extra_body": extra_body,
-        }
-
         logger.debug("Logging the request...")
-        request_logger.log(openai_params)
+        request_logger.log(chat_params)
 
-        embed = None if use_plain else discord.Embed()
-        if embed:
-            for warning in sorted(warnings):
-                embed.add_field(name=warning, value="", inline=False)
-
-        async def reply_helper(content: str = "", embed: discord.Embed | None = None, view: LayoutView | None = None) -> None:
-            target = trigger_msg if not response_msgs else response_msgs[-1]
-
-            reply_kwargs: dict[str, Any] = {
-                "content": content,
-                "embed": embed,
-                "view": view,
-                "silent": True,
-            }
-
-            msg = await target.reply(**reply_kwargs)
-            response_msgs.append(msg)
-            self.msg_nodes[msg.id] = MsgNode(parent_msg=trigger_msg)
-            await self.msg_nodes[msg.id].lock.acquire()
+        typing_manager = trigger_msg.channel.typing()
+        typing_active = False
 
         try:
-            async with trigger_msg.channel.typing():
-                first_chunk_received = False
-                full_stream_content = ""
+            stream = await client.chat.completions.create(**chat_params)
+            is_first_chunk = True
 
-                async for chunk in await client.chat.completions.create(**openai_params):
-                    if not first_chunk_received:
-                        logger.debug("Stream started...")
-                        first_chunk_received = True
+            async for chunk in stream:
+                if is_first_chunk:
+                    logger.debug("Stream started...")
+                    await typing_manager.__aenter__()
+                    typing_active = True
+                    is_first_chunk = False
 
-                    if not chunk.choices:
-                        continue
-                    choice = chunk.choices[0]
-                    delta_content = choice.delta.content or ""
+                content = extract_chunk_content(chunk)
+                if not content:
+                    continue
 
-                    # Handle potential list content (Mistral/Multimodal quirks)
-                    if isinstance(delta_content, list):
-                        logger.debug("Multimodal content detected...")
-                        content_parts = delta_content
-                        delta_content = ""
-                        for part in content_parts:
-                            if isinstance(part, str):
-                                delta_content += part
-                            elif isinstance(part, dict):
-                                delta_content += part.get("text", "")
-                            elif hasattr(part, "text"):
-                                delta_content += part.text
+                update_content_buffer(response_contents, content, max_len)
+                if chunk and chunk.choices:
+                    finish_reason = chunk.choices[0].finish_reason
+                    if finish_reason:
+                        logger.debug("Stream finished. Reason: %s", finish_reason)
 
-                    full_stream_content += delta_content
-                    if not full_stream_content:
-                        continue
-
-                    if not response_contents or len(response_contents[-1] + delta_content) > max_message_length:
-                        response_contents.append("")
-
-                    response_contents[-1] += delta_content
-
-                    finish_reason = choice.finish_reason
-                    if finish_reason is not None:
-                        logger.debug(f"Stream finished. Reason: {finish_reason}")
-
-                    if embed:
-                        now_ts = datetime.now(timezone.utc).timestamp()
-                        time_delta = now_ts - self.last_task_time
-                        is_final = finish_reason is not None
-                        ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-
-                        if len(response_contents) > len(response_msgs) or ready_to_edit or is_final:
-                            # The type checker now knows 'embed' is discord.Embed
-                            embed.description = response_contents[-1] + (STREAMING_INDICATOR if not is_final else "")
-                            embed.colour = EMBED_COLOR_COMPLETE if is_final else EMBED_COLOR_INCOMPLETE
-
-                            if len(response_contents) > len(response_msgs):
-                                await reply_helper(embed=embed)
-                            else:
-                                await response_msgs[-1].edit(embed=embed)
-                            self.last_task_time = now_ts
-
-                # Post-processing
-                final_text = "".join(response_contents)
-
-                if self.config.chat.sanitize_response:
-                    logger.debug("Sanitizing text...")
-                    final_text = clean_response(final_text)
-
-                if "<think>" in final_text:
-                    logger.debug("Removing <think> block...")
-                    final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
-
-                if use_plain:
-                    for chunk in [final_text[i : i + 2000] for i in range(0, len(final_text), 2000)]:
-                        await reply_helper(view=LayoutView().add_item(TextDisplay(content=chunk)))
-                elif embed and response_msgs:
-                    embed.description = final_text
-                    embed.colour = EMBED_COLOR_COMPLETE
-                    await response_msgs[-1].edit(embed=embed)
+            await self._finalize_response(trigger_msg, response_msgs, response_contents)
 
         except Exception:
             logger.exception("Error while generating response!")
             await trigger_msg.channel.send("⚠️ An error occurred.")
         finally:
-            elapsed_time = time.perf_counter() - start_time
-            logger.info(f"Response finished in {elapsed_time:.4f} seconds!")
-            for response_msg in response_msgs:
-                node = self.msg_nodes[response_msg.id]
-                node.text = "".join(response_contents)
+            if typing_active:
+                await typing_manager.__aexit__(None, None, None)
+
+            elapsed = time.perf_counter() - start_time
+            logger.info("Response finished in %s seconds!", f"{elapsed:.4f}")
+            self._release_node_locks(response_msgs, response_contents)
+
+    async def _finalize_response(
+        self,
+        trigger_msg: discord.Message,
+        msgs: list[discord.Message],
+        contents: list[str],
+    ) -> None:
+        """Process the final text and update the UI one last time.
+
+        :param trigger_msg: The original trigger message.
+        :param msgs: The list of sent response messages.
+        :param contents: The raw content chunks.
+        """
+        full_text = "".join(contents)
+        final_text = process_response_text(text=full_text, sanitize=self.config.chat.sanitize_response)
+
+        # Split final text into 2000-char chunks for plain text sending
+        chunk_size = 2000
+        text_chunks = [final_text[i : i + chunk_size] for i in range(0, len(final_text), chunk_size)]
+        for chunk in text_chunks:
+            view = LayoutView().add_item(TextDisplay(content=chunk))
+            await self._send_response_node(trigger_msg, msgs, view=view)
+
+    async def _send_response_node(
+        self,
+        trigger_msg: discord.Message,
+        msgs: list[discord.Message],
+        content: str = "",
+        view: LayoutView | None = None,
+    ) -> None:
+        """Send a new message and initialize its MsgNode with a lock.
+
+        :param trigger_msg: The original trigger message.
+        :param msgs: The list of existing response messages (will be appended to).
+        :param content: Message content.
+        :param view: Message view.
+        """
+        target = trigger_msg if not msgs else msgs[-1]
+
+        reply_kwargs: dict[str, Any] = {
+            "content": content,
+            "view": view,
+            "silent": True,
+        }
+
+        msg = await target.reply(**reply_kwargs)
+        msgs.append(msg)
+
+        node = MsgNode(parent_msg=trigger_msg)
+        self.msg_nodes[msg.id] = node
+        await node.lock.acquire()
+
+    def _release_node_locks(self, msgs: list[discord.Message], contents: list[str]) -> None:
+        """Update MsgNodes with final text and release their locks.
+
+        :param msgs: The list of sent messages.
+        :param contents: The list of content chunks corresponding to messages.
+        """
+        full_content = "".join(contents)
+
+        for msg in msgs:
+            node = self.msg_nodes.get(msg.id)
+            if node:
+                node.text = full_content
                 if node.lock.locked():
                     node.lock.release()
 
     def _prune_msg_nodes(self) -> None:
         """Prunes old MsgNodes to prevent memory leaks."""
-        if len(self.msg_nodes) > MAX_MESSAGE_NODES:
-            logger.debug("Pruning old MsgNodes...")
+        if len(self.msg_nodes) <= MAX_MESSAGE_NODES:
+            return
 
-            sorted_ids = sorted(self.msg_nodes.keys())
-            for msg_id in sorted_ids[: len(self.msg_nodes) - MAX_MESSAGE_NODES]:
-                self.msg_nodes.pop(msg_id, None)
+        to_remove_count = len(self.msg_nodes) - MAX_MESSAGE_NODES
+        logger.debug("Pruning %d old MsgNodes...", to_remove_count)
 
-    def _setup_commands(self) -> None:
-        """Set up the slash command tree."""
-        config_group = app_commands.Group(name="config", description="Bot configuration commands")
+        sorted_ids = sorted(self.msg_nodes.keys())
+        ids_to_delete = sorted_ids[:to_remove_count]
 
-        @config_group.command(name="model", description="Switch the default model")
-        async def config_model(interaction: discord.Interaction, model: str) -> None:
-            if interaction.user.id not in self.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("Permission denied.", ephemeral=True)
-                return
+        for msg_id in ids_to_delete:
+            self.msg_nodes.pop(msg_id, None)
 
-            config_manager.set_default_model(model)
-
-            channel_name = getattr(interaction.channel, "name", "DM")
-
-            logger.info(f"Admin {interaction.user.name} switched default model to {model} (command sent from #{channel_name})")
-
-            await interaction.response.send_message(f"[Default model set to `{model}`.]")
-
-        @config_model.autocomplete("model")
-        async def model_autocomplete(interaction: discord.Interaction, current: str) -> list[Choice[str]]:
-            default_model = self.config.chat.default_model
-            models = self.config.llm.models
-
-            choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if current.lower() in default_model.lower() else []
-            choices += [Choice(name=f"○ {model}", value=model) for model in models if model != default_model and current.lower() in model.lower()]
-
-            return choices[:25]
-
-        @config_group.command(name="reload", description="Reload config from disk")
-        async def config_reload(interaction: discord.Interaction) -> None:
-            if interaction.user.id not in self.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("Permission denied.", ephemeral=True)
-                return
-
-            config_manager.load_config()
-
-            logger.info(f"Admin {interaction.user.name} reloaded the configuration")
-
-            await interaction.response.send_message("Configuration reloaded from disk.", ephemeral=True)
-
-        @config_group.command(name="channelmodel", description="Switch the model for a specific channel")
-        async def config_channel_model(interaction: discord.Interaction, model: str, channel: discord.abc.GuildChannel | None = None) -> None:
-            if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("You don't have permission to change the channel model.", ephemeral=True)
-                return
-
-            target_channel = channel or interaction.channel
-            if target_channel is None:
-                return
-
-            config_manager.set_channel_model(target_channel.id, model)
-
-            if isinstance(target_channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread, discord.StageChannel)):
-                channel_mention = target_channel.mention
-                channel_name = target_channel.name
-            else:
-                channel_mention = "Direct Messages"
-                channel_name = channel_mention
-
-            logger.info(f"Admin {interaction.user.name} switched channel model to {model} in #{channel_name} ({target_channel.id})")
-
-            await interaction.response.send_message(f"[`channel_model` for {channel_mention} set to: `{model}`.]")
-
-        @config_channel_model.autocomplete("model")
-        async def config_channel_model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-            default_model = config_manager.config.chat.default_model
-            channel_models = config_manager.config.chat.channel_models
-
-            current_active = channel_models.get(interaction.channel_id or 0, default_model)
-            is_overridden = interaction.channel_id in channel_models
-
-            status_text = "(current channel)" if is_overridden else "(current default)"
-
-            choices = [Choice(name=f"◉ {current_active} {status_text}", value=current_active)] if curr_str.lower() in current_active.lower() else []
-            choices += [Choice(name=f"○ {model}", value=model) for model in config_manager.config.llm.models if model != current_active and curr_str.lower() in model.lower()]
-            return choices[:25]
-
-        @config_group.command(name="set", description="Edit a specific configuration setting")
-        async def config_set(interaction: discord.Interaction, key: str, value: str) -> None:
-            if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-                await interaction.response.send_message("You don't have permission to edit configuration.", ephemeral=True)
-                return
-
-            if key not in EDITABLE_SETTINGS:
-                await interaction.response.send_message(
-                    f"Invalid setting: `{key}`. Please select one from the list.",
-                    ephemeral=True,
-                )
-                return
-
-            try:
-                current_value = config_manager.get_setting_value(key)
-            except AttributeError:
-                await interaction.response.send_message(
-                    f"[Setting `{key}` not found in configuration structure.]",
-                    ephemeral=True,
-                )
-                return
-
-            target_type = type(current_value)
-
-            if current_value is None:
-                await interaction.response.send_message(
-                    f"Setting `{key}` is not present in the current configuration, so its type cannot be inferred.",
-                    ephemeral=True,
-                )
-                return
-
-            parsed_value: int | bool | float | str
-
-            try:
-                if target_type is bool:
-                    if value.lower() in ("true", "1", "yes", "on"):
-                        parsed_value = True
-                    elif value.lower() in ("false", "0", "no", "off"):
-                        parsed_value = False
-                    else:
-                        error = "Invalid boolean"
-                        raise ValueError(error)
-                elif target_type is int:
-                    parsed_value = int(value)
-                elif target_type is float:
-                    parsed_value = float(value)
-                else:
-                    parsed_value = value
-
-            except ValueError:
-                await interaction.response.send_message(
-                    f"Invalid value for `{key}`. Expected type: `{target_type.__name__}`.",
-                    ephemeral=True,
-                )
-                return
-
-            # Apply update
-            config_manager.update_setting(key, parsed_value)
-
-            logger.info(f"Admin {interaction.user.name} changed config {key} to {parsed_value}")
-            await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
-
-        @config_set.autocomplete("key")
-        async def config_set_key_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-            return [Choice(name=key, value=key) for key in EDITABLE_SETTINGS if curr_str.lower() in key.lower()][:25]
-
-        self.tree.add_command(config_group)
-
-
-def console_listener() -> None:
-    """Listen for console commands in a blocking loop.
-
-    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
-
-    :return: None
-    """
-    while True:
-        try:
-            command = input().strip().lower()
-            if command == "reload":
-                os._exit(2)
-            elif command in ("exit", "stop", "quit"):
-                os._exit(0)
-            else:
-                print(f"Unknown command: {command}")
-        except EOFError:
-            break
+        logger.debug("Successfully pruned %d nodes!", len(ids_to_delete))
 
 
 async def main() -> None:
@@ -760,19 +601,46 @@ async def main() -> None:
 
     Initializes Discord intents, creates the bot instance, starts the console listener,
     and runs the bot with the configured token.
-
-    :return: None
-    :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
     """
     intents = discord.Intents.default()
     intents.message_content = True
     activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
 
     bot = LLMCordBot(intents=intents, activity=activity)
-    threading.Thread(target=console_listener, daemon=True).start()
+    threading.Thread(target=console_listener, args=(bot,), daemon=True).start()
 
     try:
         async with bot:
             await bot.start(config_manager.config.discord.bot_token)
     except KeyboardInterrupt:
         pass
+    finally:
+        # Access the exit code from the bot instance
+        exit_status = bot.exit_code
+        logger.info("Bot process exiting with code %d", exit_status)
+        sys.exit(exit_status)
+
+
+def console_listener(bot: LLMCordBot) -> None:
+    """Listen for console commands in a blocking loop.
+
+    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
+
+    :param bot: The running bot instance used to trigger a graceful shutdown.
+    """
+    try:
+        while True:
+            command = input().strip().lower()
+            if command == "reload":
+                bot.exit_code = 2
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+                break
+            if command in ("exit", "stop", "quit"):
+                bot.exit_code = 0
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+                break
+            logger.warning("Unknown command: %s", command)
+    except EOFError:
+        pass
+    except Exception:
+        logger.exception("Error in console listener")

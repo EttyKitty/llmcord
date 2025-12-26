@@ -1,20 +1,41 @@
+"""Module for handling application logging configuration and utilities."""
+
+import ctypes
 import json
 import logging
 import os
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import ClassVar
 
-from main import logger
+logger = logging.getLogger(__name__)
 
 # --- Fix for Windows Colors ---
 if os.name == "nt":
-    os.system("")  # This simple hack enables ANSI support in Windows CMD
+    # Enables ANSI support in Windows CMD via kernel32 calls
+    # Using ctypes avoids subprocess/shell injection risks associated with os.system or subprocess
+    try:
+        _kernel32 = ctypes.windll.kernel32
+        _handle = _kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE = -11
+        _mode = ctypes.c_ulong()
+
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+        if _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)):
+            _mode.value |= 0x0004
+            _kernel32.SetConsoleMode(_handle, _mode)
+    except (OSError, AttributeError):
+        # Gracefully degrade if ANSI support cannot be enabled
+        pass
 
 
 class RequestLogger:
     """Handles logging of LLM request payloads to a file. Outputs pretty-printed JSON for readability."""
 
-    def __init__(self, filename: str = "logs/llm_requests.json"):
+    def __init__(self, filename: str = "logs/llm_requests.json") -> None:
+        """Initialize the RequestLogger with a file handler.
+
+        :param filename: Path to the log file.
+        """
         self.logger = logging.getLogger("request_logger")
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
@@ -53,7 +74,7 @@ class RequestLogger:
 
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             logger.exception("Failed to log LLM request!")
 
 
@@ -71,7 +92,7 @@ class ColoredFormatter(logging.Formatter):
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
-    FORMATS = {
+    FORMATS: ClassVar[dict[int, str]] = {
         logging.DEBUG: grey + fmt + reset,
         logging.INFO: green + fmt + reset,
         logging.WARNING: yellow + fmt + reset,
@@ -79,14 +100,19 @@ class ColoredFormatter(logging.Formatter):
         logging.CRITICAL: bold_red + fmt + reset,
     }
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
+        """Format the specified record as text.
+
+        :param record: The log record to format.
+        :return: The formatted log string.
+        """
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
         return formatter.format(record)
 
 
-def setup_logging():
-    """Configure the root logger and silences noisy libraries."""
+def setup_logging() -> None:
+    """Configure the root logger with colored output and silence noisy libraries."""
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(ColoredFormatter())
 

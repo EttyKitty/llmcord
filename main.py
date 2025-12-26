@@ -1,3 +1,8 @@
+"""Entry point for the application.
+
+This module acts as a runner that handles the main event loop, automatic restarts, and crash recovery logic.
+"""
+
 import asyncio
 import logging
 import time
@@ -40,7 +45,7 @@ if __name__ == "__main__":
 
             if retry_count > MAX_RETRIES:
                 logger.warning("Maximum retry limit (%d) reached.", MAX_RETRIES)
-                print("Press Enter to restart...")
+                logger.info("Press Enter to restart...")
                 try:
                     input()
                 except EOFError:
