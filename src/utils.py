@@ -295,9 +295,9 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     """Replace dynamic placeholders in prompt strings."""
     now = datetime.now(timezone.utc)
     user_roles = getattr(msg.author, "roles", [])
-    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or "None"
+    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or ""
     guild_emojis = getattr(msg.guild, "emojis", [])
-    guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or "None"
+    guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or ""
 
     placeholders = {
         "{date}": now.strftime("%B %d %Y"),
@@ -310,7 +310,7 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
         "{user_id}": str(msg.author.id),
         "{user_roles}": user_roles_str,
         "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-        "{guild_description}": msg.guild.description if msg.guild else "",
+        "{guild_description}": (msg.guild.description or "") if msg.guild else "",
         "{guild_emojis}": guild_emojis_str,
         "{channel_name}": getattr(msg.channel, "name", ""),
         "{channel_topic}": getattr(msg.channel, "topic", ""),
@@ -348,7 +348,7 @@ def create_message_payload(
 
     text_tokens = len(TOKENIZER.encode(formatted_text))
     images_to_add = node.images[:max_images] if accept_images else []
-    image_tokens = len(images_to_add) * 1100
+    image_tokens = len(images_to_add) * 1100  # Approximate token cost per image for vision models (based on OpenAI estimates)
     msg_tokens = text_tokens + image_tokens
 
     content: str | list[ChatCompletionContentPartParam]
