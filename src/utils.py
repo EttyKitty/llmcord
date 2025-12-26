@@ -143,7 +143,8 @@ def is_message_allowed(msg: discord.Message, permissions: PermissionsConfig, *, 
 def get_llm_specials(provider: str, model: str) -> tuple[bool, bool]:
     """Resolve the LLM flags based on configuration.
 
-    :param message: The Discord message that triggered the request.
+    :param provider: The LLM provider identifier.
+    :param model: The model identifier.
     :return: A tuple containing accept_images flag, and accept_usernames flag.
     """
     accept_images = any(x in model.lower() for x in VISION_MODEL_TAGS)
@@ -248,9 +249,16 @@ def get_llm_provider_model(channel_id: int, channel_models: dict[int, str], defa
     :param channel_models: A dictionary mapping channel IDs to provider/model strings.
     :param default_model: The default provider/model string to use as a fallback.
     :return: A tuple containing (provider name, model name).
+    :raises ValueError: If the provider/model string does not contain a '/' separator.
     """
     provider_slash_model = channel_models.get(channel_id, default_model)
+
+    if "/" not in provider_slash_model:
+        error = f"Invalid model format: '{provider_slash_model}'. Expected 'provider/model'."
+        raise ValueError(error)
+
     provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+
     return provider, model
 
 
@@ -294,8 +302,12 @@ def get_provider_config(
     :param providers_config: The dictionary of all provider configurations.
     :param client_cache: The dictionary storing existing AsyncOpenAI instances.
     :param httpx_client: The shared httpx.AsyncClient to use for requests.
-    :return: A tuple containing (provider configuration, OpenAI client).
+    :raises KeyError: If the provider is not found in providers_config.
     """
+    if provider not in providers_config:
+        error = f"Provider '{provider}' not found in configuration."
+        raise KeyError(error)
+
     provider_config = providers_config[provider]
     openai_client = get_openai_client(provider_config, client_cache, httpx_client)
 

@@ -2,9 +2,9 @@
 
 import logging
 import sys
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, get_type_hints
 
 import yaml
 import yaml.representer
@@ -188,7 +188,7 @@ class ConfigManager:
             error = f"Expected dict for {cls.__name__}, got {type(data)}"
             raise TypeError(error)
 
-        field_types = {f.name: f.type for f in fields(cls)}
+        field_types = get_type_hints(cls)
 
         kwargs = {}
         for key, value in data.items():

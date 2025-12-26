@@ -112,7 +112,7 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging() -> None:
-    """Configure the root logger and silences noisy libraries."""
+    """Configure the root logger with colored output and silence noisy libraries."""
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(ColoredFormatter())
 

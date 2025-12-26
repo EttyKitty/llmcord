@@ -8,8 +8,8 @@ OpenAI-compatible APIs.
 
 import asyncio
 import logging
-import os
 import re
+import sys
 import threading
 import time
 from base64 import b64encode
@@ -41,48 +41,18 @@ TOKENIZER = tiktoken.get_encoding("cl100k_base")
 logger = logging.getLogger(__name__)
 
 
-async def main() -> None:
-    """Entry point for the bot application.
-
-    Initializes Discord intents, creates the bot instance, starts the console listener,
-    and runs the bot with the configured token.
-
-    :raises KeyboardInterrupt: Handled gracefully to allow clean shutdown.
-    """
-    intents = discord.Intents.default()
-    intents.message_content = True
-    activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
-
-    bot = LLMCordBot(intents=intents, activity=activity)
-    threading.Thread(target=console_listener, daemon=True).start()
-
-    try:
-        async with bot:
-            await bot.start(config_manager.config.discord.bot_token)
-    except KeyboardInterrupt:
-        pass
-
-
-def console_listener() -> None:
-    """Listen for console commands in a blocking loop.
-
-    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
-    """
-    try:
-        while True:
-            command = input().strip().lower()
-            if command == "reload":
-                os._exit(2)
-            elif command in ("exit", "stop", "quit"):
-                os._exit(0)
-            else:
-                logger.warning("Unknown command: %s", command)
-    except EOFError:
-        pass
-
-
 class LLMCordBot(commands.Bot):
-    """The main bot class for llmcord, encapsulating state and logic."""
+    """The main bot class for llmcord, encapsulating state and logic.
+
+    This class manages the bot's lifecycle, message processing, conversation
+    context building, and interaction with LLM providers via OpenAI-compatible APIs.
+
+    :ivar openai_clients: Cache of AsyncOpenAI clients keyed by base URL.
+    :ivar msg_nodes: Cache of MsgNode objects keyed by message ID.
+    :ivar last_task_time: Timestamp of the last processed task.
+    :ivar httpx_client: Shared HTTP client for external requests.
+    :ivar exit_code: Exit code.
+    """
 
     @property
     def config(self) -> RootConfig:
@@ -118,6 +88,7 @@ class LLMCordBot(commands.Bot):
         self.msg_nodes: dict[int, MsgNode] = {}
         self.last_task_time: float = 0.0
         self.httpx_client = httpx.AsyncClient()
+        self.exit_code: int = 0
 
     async def close(self) -> None:
         """Cleanup resources before shutting down."""
@@ -130,7 +101,7 @@ class LLMCordBot(commands.Bot):
         await self.tree.sync()
 
         if client_id := self.config.discord.client_id:
-            logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=*%d&permissions=412317191168&scope=bot", client_id)
+            logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
 
         logger.info("Bot ready. Logged in as %s", self.safe_user)
 
@@ -142,7 +113,7 @@ class LLMCordBot(commands.Bot):
         # =============================
         # ======== 0. Gatekeep ========
         # =============================
-        if not self.safe_user or message.author.bot:
+        if message.author.bot:
             return
 
         is_dm = message.channel.type == discord.ChannelType.private
@@ -524,8 +495,10 @@ class LLMCordBot(commands.Bot):
                     continue
 
                 update_content_buffer(response_contents, content, max_len)
-                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
-                logger.debug("Stream finished. Reason: %s", finish_reason)
+                if chunk and chunk.choices:
+                    finish_reason = chunk.choices[0].finish_reason
+                    if finish_reason:
+                        logger.debug("Stream finished. Reason: %s", finish_reason)
 
             await self._finalize_response(trigger_msg, response_msgs, response_contents)
 
@@ -621,3 +594,53 @@ class LLMCordBot(commands.Bot):
             self.msg_nodes.pop(msg_id, None)
 
         logger.debug("Successfully pruned %d nodes!", len(ids_to_delete))
+
+
+async def main() -> None:
+    """Entry point for the bot application.
+
+    Initializes Discord intents, creates the bot instance, starts the console listener,
+    and runs the bot with the configured token.
+    """
+    intents = discord.Intents.default()
+    intents.message_content = True
+    activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
+
+    bot = LLMCordBot(intents=intents, activity=activity)
+    threading.Thread(target=console_listener, args=(bot,), daemon=True).start()
+
+    try:
+        async with bot:
+            await bot.start(config_manager.config.discord.bot_token)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Access the exit code from the bot instance
+        exit_status = bot.exit_code
+        logger.info("Bot process exiting with code %d", exit_status)
+        sys.exit(exit_status)
+
+
+def console_listener(bot: LLMCordBot) -> None:
+    """Listen for console commands in a blocking loop.
+
+    Accepts 'reload', 'exit', 'stop', or 'quit' commands to control the bot process.
+
+    :param bot: The running bot instance used to trigger a graceful shutdown.
+    """
+    try:
+        while True:
+            command = input().strip().lower()
+            if command == "reload":
+                bot.exit_code = 2
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+                break
+            if command in ("exit", "stop", "quit"):
+                bot.exit_code = 0
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+                break
+            logger.warning("Unknown command: %s", command)
+    except EOFError:
+        pass
+    except Exception:
+        logger.exception("Error in console listener")

@@ -29,9 +29,12 @@ class ConfigurationCog(commands.Cog):
 
     @config_group.command(name="model", description="Switch the default model")
     async def config_model(self, interaction: discord.Interaction, model: str) -> None:
-        """Switch the default LLM model."""
-        if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-            await interaction.response.send_message("Permission denied.", ephemeral=True)
+        """Switch the default LLM model.
+
+        :param interaction: The Discord interaction context.
+        :param model: The model identifier to set as default.
+        """
+        if not await self._check_admin(interaction):
             return
 
         config_manager.set_default_model(model)
@@ -52,8 +55,7 @@ class ConfigurationCog(commands.Cog):
     @config_group.command(name="reload", description="Reload config from disk")
     async def config_reload(self, interaction: discord.Interaction) -> None:
         """Reload configuration from disk."""
-        if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-            await interaction.response.send_message("Permission denied.", ephemeral=True)
+        if not await self._check_admin(interaction):
             return
 
         config_manager.load_config()
@@ -63,12 +65,12 @@ class ConfigurationCog(commands.Cog):
     @config_group.command(name="channelmodel", description="Switch the model for a specific channel")
     async def config_channel_model(self, interaction: discord.Interaction, model: str, channel: discord.abc.GuildChannel | None = None) -> None:
         """Switch the model for a specific channel."""
-        if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-            await interaction.response.send_message("You don't have permission to change the channel model.", ephemeral=True)
+        if not await self._check_admin(interaction):
             return
 
         target_channel = channel or interaction.channel
         if target_channel is None:
+            await interaction.response.send_message("Could not determine target channel.", ephemeral=True)
             return
 
         config_manager.set_channel_model(target_channel.id, model)
@@ -102,8 +104,7 @@ class ConfigurationCog(commands.Cog):
     @app_commands.choices(key=[Choice(name=k, value=k) for k in sorted(EDITABLE_SETTINGS)][:25])
     async def config_set(self, interaction: discord.Interaction, key: str, value: str) -> None:
         """Edit a specific configuration setting."""
-        if interaction.user.id not in config_manager.config.discord.permissions.users.admin_ids:
-            await interaction.response.send_message("You don't have permission to edit configuration.", ephemeral=True)
+        if not await self._check_admin(interaction):
             return
 
         # Although the UI restricts choices, we keep this check for safety
@@ -162,6 +163,25 @@ class ConfigurationCog(commands.Cog):
 
         logger.info("Admin %s changed config %s to %s", interaction.user.name, key, parsed_value)
         await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
+
+    def _is_admin(self, user_id: int) -> bool:
+        """Check if a user has admin permissions.
+
+        :param user_id: The Discord user ID to check.
+        :return: True if the user is an admin, False otherwise.
+        """
+        return user_id in config_manager.config.discord.permissions.users.admin_ids
+
+    async def _check_admin(self, interaction: discord.Interaction) -> bool:
+        """Verify admin permissions and send denial message if unauthorized.
+
+        :param interaction: The Discord interaction context.
+        :return: True if authorized, False otherwise.
+        """
+        if not self._is_admin(interaction.user.id):
+            await interaction.response.send_message("Permission denied.", ephemeral=True)
+            return False
+        return True
 
 
 async def setup(bot: commands.Bot) -> None:
