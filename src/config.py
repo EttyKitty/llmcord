@@ -256,6 +256,7 @@ class ConfigManager:
 
         :param path: The dot-notation path to the setting.
         :return: The value of the setting.
+        :raises AttributeError: If the path does not exist in the configuration.
         """
         current: object = self.config
         for key in path.split("."):

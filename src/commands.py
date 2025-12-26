@@ -29,11 +29,7 @@ class ConfigurationCog(commands.Cog):
 
     @config_group.command(name="model", description="Switch the default model")
     async def config_model(self, interaction: discord.Interaction, model: str) -> None:
-        """Switch the default LLM model.
-
-        :param interaction: The Discord interaction context.
-        :param model: The model identifier to set as default.
-        """
+        """Switch the default LLM model."""
         if not await self._check_admin(interaction):
             return
 
