@@ -5,8 +5,10 @@ chains and provides utility functions for sanitizing text input/output.
 """
 
 import logging
+import time
 
 import discord
+import httpx
 
 from .config import PermissionsConfig
 
@@ -65,23 +67,32 @@ def is_message_allowed(msg: discord.Message, permissions: PermissionsConfig, *, 
     return not is_bad_channel
 
 
-async def fetch_history(message: discord.Message, max_messages: int, *, use_channel_context: bool, bot_user: discord.ClientUser) -> list[discord.Message]:
-    """Retrieve message history either via channel history or reply chain.
+async def fetch_history(
+    message: discord.Message,
+    max_messages: int,
+    *,
+    use_channel_context: bool,
+    bot_user: discord.ClientUser,
+) -> list[discord.Message]:
+    """Retrieve message history efficiently using a local cache to avoid rate limits.
 
     :param message: The trigger message.
     :param max_messages: Maximum number of messages to fetch.
     :param use_channel_context: Whether to use linear channel history.
-    :param bot_user: The bot's user object to check for mentions.
+    :param bot_user: The bot's user object.
     :return: A list of Discord messages.
     """
     logger.debug("Building message history... (Mode: %s)", "Channel" if use_channel_context else "Reply Chain")
+    start_time = time.perf_counter()
 
     if use_channel_context:
         message_history = [message]
         message_history.extend([msg async for msg in message.channel.history(limit=max_messages - 1, before=message)])
         return message_history[:max_messages]
 
-    # Reply Chain Logic
+    # Fetch a batch of recent messages once to avoid individual API calls for every reply hop.
+    local_cache: dict[int, discord.Message] = {msg.id: msg async for msg in message.channel.history(limit=100, before=message)}
+
     message_history: list[discord.Message] = []
     history_ids: set[int] = set()
     current_msg: discord.Message | None = message
@@ -90,34 +101,68 @@ async def fetch_history(message: discord.Message, max_messages: int, *, use_chan
         history_ids.add(current_msg.id)
         message_history.append(current_msg)
 
-        # Resolve next message in chain
         next_msg = None
-        if current_msg.reference and current_msg.reference.message_id:
-            next_msg = await fetch_referenced_message(current_msg)
+
+        is_public_thread = current_msg.channel.type == discord.ChannelType.public_thread
+        parent_is_thread_start = is_public_thread and current_msg.reference is None and isinstance(current_msg.channel, discord.Thread) and current_msg.channel.parent is not None
+
+        if parent_is_thread_start and isinstance(current_msg.channel, discord.Thread):
+            thread = current_msg.channel
+            next_msg = thread.starter_message or await fetch_referenced_message(current_msg, force_id=thread.id)
+
+        # Try to resolve via Reply Reference
+        elif current_msg.reference and current_msg.reference.message_id:
+            ref_id = current_msg.reference.message_id
+            if ref_id in local_cache:
+                next_msg = local_cache[ref_id]
+            else:
+                next_msg = await fetch_referenced_message(current_msg)
+
+        # Fallback to "Previous Message" logic (if no reply and not mentioned)
         elif bot_user.mention not in current_msg.content:
-            next_msg = await fetch_previous_message(current_msg, bot_user)
+            # Search local cache for the most recent message by the same author (or bot in DMs)
+            potential_prev = [m for m in local_cache.values() if m.id < current_msg.id and m.type in (discord.MessageType.default, discord.MessageType.reply)]
+            potential_prev.sort(key=lambda x: x.id, reverse=True)
+
+            for p in potential_prev:
+                is_dm = current_msg.channel.type == discord.ChannelType.private
+                is_expected = p.author in (bot_user, current_msg.author) if is_dm else p.author == current_msg.author
+                if is_expected:
+                    next_msg = p
+                    break
 
         current_msg = next_msg
+
+    elapsed_time = time.perf_counter() - start_time
+    logger.debug("Fetched history in %s seconds!", f"{elapsed_time:.4f}")
 
     return message_history
 
 
-async def fetch_referenced_message(current_msg: discord.Message) -> discord.Message | None:
-    """Fetch the message referenced by the current message."""
-    if not current_msg.reference or not current_msg.reference.message_id:
+async def fetch_referenced_message(current_msg: discord.Message, force_id: int | None = None) -> discord.Message | None:
+    """Fetch a specific referenced message, prioritizing cache.
+
+    :param current_msg: The message containing the reference.
+    :param force_id: Optional ID to fetch if the reference is not standard (e.g. thread starter).
+    :return: The Discord message or None.
+    """
+    target_id = force_id or (current_msg.reference.message_id if current_msg.reference else None)
+    if not target_id:
         return None
+
+    # Check discord.py's internal cache first
+    if not force_id and current_msg.reference and (cached := (current_msg.reference.cached_message or current_msg.reference.resolved)) and isinstance(cached, discord.Message):
+        return cached
 
     try:
-        next_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+        # Use the parent channel if it's a thread starter we're looking for
+        channel = current_msg.channel
+        if force_id and isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
+            return await channel.parent.fetch_message(target_id)
 
-        # Handle Thread starter messages
-        if isinstance(current_msg.channel, discord.Thread) and isinstance(current_msg.channel.parent, discord.abc.Messageable) and next_msg.id == current_msg.channel.id:
-            return current_msg.channel.starter_message or await current_msg.channel.parent.fetch_message(current_msg.channel.id)
+        return await channel.fetch_message(target_id)
     except (discord.NotFound, discord.HTTPException):
-        logger.exception("Failed to fetch parent for message %d", current_msg.reference.message_id)
         return None
-    else:
-        return next_msg
 
 
 async def fetch_previous_message(current_msg: discord.Message, bot_user: discord.ClientUser) -> discord.Message | None:
@@ -162,3 +207,20 @@ def is_supported_attachment(attachment: discord.Attachment) -> bool:
     :return: True if the attachment is a text or image file, False otherwise.
     """
     return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
+
+
+async def download_attachment(httpx_client: httpx.AsyncClient, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
+    """Download a Discord attachment using the provided HTTP client.
+
+    :param httpx_client: The shared HTTPX client instance.
+    :param attachment: The Discord attachment to download.
+    :return: A tuple containing the original attachment and the HTTP response (or None if failed).
+    """
+    try:
+        resp = await httpx_client.get(attachment.url)
+        resp.raise_for_status()
+    except (httpx.HTTPError, httpx.TimeoutException) as error:
+        logger.warning("Failed to download attachment %s (%s): %s", attachment.filename, attachment.url, error)
+        return attachment, None
+    else:
+        return attachment, resp

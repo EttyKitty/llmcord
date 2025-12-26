@@ -23,7 +23,7 @@ from openai import AsyncOpenAI
 
 from .commands import setup
 from .config import RootConfig, config_manager
-from .discord_utils import fetch_history, get_component_text, get_embed_text, is_message_allowed, is_supported_attachment
+from .discord_utils import download_attachment, fetch_history, get_component_text, get_embed_text, is_message_allowed, is_supported_attachment
 from .logger import request_logger
 from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, process_response_text, replace_placeholders, update_content_buffer
 
@@ -218,7 +218,7 @@ class LLMCordBot(commands.Bot):
             text_parts.extend(get_component_text(c) for c in msg.components)
 
             to_download = [a for a in msg.attachments if is_supported_attachment(a)]
-            downloads = await asyncio.gather(*(self._download_attachment(a) for a in to_download))
+            downloads = await asyncio.gather(*(download_attachment(self.httpx_client, a) for a in to_download))
 
             node.images = []
             for attachment, resp in downloads:
@@ -244,17 +244,6 @@ class LLMCordBot(commands.Bot):
             node.user_display_name = author.display_name if node.role == "user" else None
             node.has_bad_attachments = len(msg.attachments) > len(to_download)
 
-    async def _download_attachment(self, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
-        """Download an attachment."""
-        try:
-            resp = await self.httpx_client.get(attachment.url)
-            resp.raise_for_status()
-        except (httpx.HTTPError, httpx.TimeoutException) as error:
-            logger.warning("Failed to download attachment %s (%s): %s", attachment.filename, attachment.url, error)
-            return attachment, None
-        else:
-            return attachment, resp
-
     async def _generate_response(
         self,
         trigger_msg: discord.Message,
@@ -267,13 +256,12 @@ class LLMCordBot(commands.Bot):
         :param client: The initialized OpenAI client.
         :param chat_params: The parameters for the API call.
         """
-        start_time = time.perf_counter()
+        overall_start = time.perf_counter()
         max_len = 4000
 
         response_msgs: list[discord.Message] = []
         response_contents: list[str] = []
 
-        logger.debug("Logging the request...")
         request_logger.log(chat_params)
 
         typing_manager = trigger_msg.channel.typing()
@@ -281,11 +269,11 @@ class LLMCordBot(commands.Bot):
 
         try:
             stream = await client.chat.completions.create(**chat_params)
-            is_first_chunk = True
 
+            is_first_chunk = True
             async for chunk in stream:
                 if is_first_chunk:
-                    logger.debug("Stream started...")
+                    logger.debug("Streaming started...")
                     await typing_manager.__aenter__()
                     typing_active = True
                     is_first_chunk = False
@@ -295,10 +283,9 @@ class LLMCordBot(commands.Bot):
                     continue
 
                 update_content_buffer(response_contents, content, max_len)
-                if chunk and chunk.choices:
-                    finish_reason = chunk.choices[0].finish_reason
-                    if finish_reason:
-                        logger.debug("Stream finished. Reason: %s", finish_reason)
+
+                if chunk.choices and chunk.choices[0].finish_reason:
+                    logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
 
             await self._finalize_response(trigger_msg, response_msgs, response_contents)
 
@@ -309,8 +296,9 @@ class LLMCordBot(commands.Bot):
             if typing_active:
                 await typing_manager.__aexit__(None, None, None)
 
-            elapsed = time.perf_counter() - start_time
-            logger.info("Response finished in %s seconds!", f"{elapsed:.4f}")
+            overall_elapsed = time.perf_counter() - overall_start
+            logger.info("Response generation finished in %s seconds!", f"{overall_elapsed:.4f}")
+
             self._release_node_locks(response_msgs, response_contents)
 
     async def _finalize_response(

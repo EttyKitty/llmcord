@@ -74,6 +74,7 @@ class RequestLogger:
 
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
+            logger.debug("Logged the request!")
         except (OSError, TypeError, ValueError):
             logger.exception("Failed to log LLM request!")
 

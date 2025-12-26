@@ -318,6 +318,7 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     }
     for key, value in placeholders.items():
         text = text.replace(key, str(value))
+
     return text.strip()
 
 
