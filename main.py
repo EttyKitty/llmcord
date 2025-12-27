@@ -23,38 +23,38 @@ if __name__ == "__main__":
         start_time = time.time()
         try:
             logger.info("Starting bot...")
-            asyncio.run(main())
+            # Capture the return code from the bot's main function
+            exit_code = asyncio.run(main())
 
-            # If main() returns cleanly (unlikely, but possible), reset retries
-            retry_count = 0
+            if exit_code == 0:
+                logger.info("Bot stopped gracefully.")
+                break
 
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user.")
+            if exit_code == 2:
+                logger.info("Bot reloading...")
+                retry_count = 0  # Reset retries for manual reloads
+            else:
+                retry_count += 1
+
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Process terminated by user or system.")
             break
 
         except Exception:
             run_duration = time.time() - start_time
-
-            # If the bot survived longer than the threshold, it's not a boot loop.
-            # Reset the counter so we don't punish random crashes days apart.
             if run_duration > STABLE_THRESHOLD:
                 retry_count = 0
-
             retry_count += 1
             logger.exception("Bot crashed!")
 
-            if retry_count > MAX_RETRIES:
-                logger.warning("Maximum retry limit (%d) reached.", MAX_RETRIES)
-                logger.info("Press Enter to restart...")
-                try:
-                    input()
-                except EOFError:
-                    # Fallback for environments without interactive input (e.g. Docker)
-                    logger.info("No input detected. Waiting %d seconds...", STABLE_THRESHOLD)
-                    time.sleep(STABLE_THRESHOLD)
-
-                # Reset counter after manual intervention
-                retry_count = 0
-            else:
-                logger.info("Restarting in %d seconds... (Attempt %d/%d)", RESTART_DELAY, retry_count, MAX_RETRIES)
-                time.sleep(RESTART_DELAY)
+        # Restart logic
+        if retry_count > MAX_RETRIES:
+            logger.warning("Maximum retry limit reached. Press Enter to restart...")
+            try:
+                input()
+            except EOFError:
+                time.sleep(STABLE_THRESHOLD)
+            retry_count = 0
+        else:
+            logger.info("Restarting in %d seconds...", RESTART_DELAY)
+            time.sleep(RESTART_DELAY)

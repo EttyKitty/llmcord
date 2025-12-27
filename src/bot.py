@@ -355,11 +355,10 @@ class LLMCordBot(commands.Bot):
         logger.debug("Successfully pruned %d nodes!", len(ids_to_delete))
 
 
-async def main() -> None:
+async def main() -> int:
     """Entry point for the bot application.
 
-    Initializes Discord intents, creates the bot instance, starts the console listener,
-    and runs the bot with the configured token.
+    :return: The exit code (0 for stop, 1 for error, 2 for reload).
     """
     intents = discord.Intents.default()
     intents.message_content = True
@@ -368,16 +367,32 @@ async def main() -> None:
     bot = LLMCordBot(intents=intents, activity=activity)
     threading.Thread(target=console_listener, args=(bot,), daemon=True).start()
 
-    try:
-        async with bot:
-            await bot.start(config_manager.config.discord.bot_token)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Access the exit code from the bot instance
-        exit_status = bot.exit_code
-        logger.info("Bot process exiting with code %d", exit_status)
-        sys.exit(exit_status)
+    retry_delay = 5
+    max_delay = 60
+
+    while True:
+        try:
+            async with bot:
+                await bot.start(config_manager.config.discord.bot_token)
+            break
+        except discord.LoginFailure:
+            logger.error("Invalid Discord token.")
+            bot.exit_code = 1
+            break
+        except (discord.GatewayNotFound, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.warning("Network error: %s. Retrying in %d seconds...", e, retry_delay)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_delay)
+        except Exception:
+            logger.exception("Fatal error in bot loop")
+            bot.exit_code = 1
+            break
+        finally:
+            # If the bot was closed via console (reload/exit), break the loop
+            if bot.exit_code != 0:
+                break
+
+    return bot.exit_code
 
 
 def console_listener(bot: LLMCordBot) -> None:
