@@ -20,7 +20,7 @@ EDITABLE_SETTINGS = (
     "chat.prefix_users",
 )
 CONFIG_DIR = Path("config")
-CONFIG_FILE = CONFIG_DIR / "config-example.yaml"
+CONFIG_FILE = CONFIG_DIR / "config.default.yaml"
 USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
 logger = logging.getLogger(__name__)
@@ -148,10 +148,10 @@ class ConfigManager:
             with CONFIG_FILE.open(encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
         except FileNotFoundError:
-            logger.exception("config-example.yaml not found! Exiting...")
+            logger.exception("config.default.yaml not found! Exiting...")
             sys.exit(1)
         except (OSError, yaml.YAMLError):
-            logger.exception("Error reading config-example.yaml")
+            logger.exception("Error reading config.default.yaml")
             sys.exit(1)
 
         # 2. Load User Overrides

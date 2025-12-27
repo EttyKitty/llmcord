@@ -80,7 +80,7 @@ Or local models with:
 git clone https://github.com/jakobdylanc/llmcord
 ```
 
-**2.** Create a copy of `config-example.yaml` named `config.yaml` and set it up.
+**2.** Create a copy of `config.default.yaml` named `config.yaml` and set it up.
 
 **3.** Run the bot.
 
