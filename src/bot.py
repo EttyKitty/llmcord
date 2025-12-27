@@ -11,20 +11,21 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import discord
 import httpx
 import tiktoken
 from discord.ext import commands
-from discord.ui import LayoutView, TextDisplay
 from openai import AsyncOpenAI
 
 from .commands import setup
 from .config import RootConfig, config_manager
-from .discord_utils import fetch_history, is_message_allowed
 from .logger import request_logger
-from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node, process_response_text, replace_placeholders, update_content_buffer
+from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node
+from .utils_discord import fetch_history, is_message_allowed
+from .utils_regex import process_response_text, replace_placeholders
 
 MAX_MESSAGE_NODES = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
@@ -204,116 +205,88 @@ class LLMCordBot(commands.Bot):
         client: AsyncOpenAI,
         chat_params: dict[str, Any],
     ) -> None:
-        """Handle the streaming of the LLM response back to Discord.
+        """Handle the lifecycle of an LLM request and its delivery to Discord.
+
+        This method coordinates the API stream, manages the Discord typing indicator,
+        and ensures response messages are sent and tracked correctly.
 
         :param trigger_msg: The message that triggered the response.
         :param client: The initialized OpenAI client.
         :param chat_params: The parameters for the API call.
         """
-        overall_start = time.perf_counter()
-        max_len = 4000
-
-        response_msgs: list[discord.Message] = []
-        response_contents: list[str] = []
-
+        overall_start: float = time.perf_counter()
         request_logger.log(chat_params)
 
-        typing_manager = trigger_msg.channel.typing()
-        typing_active = False
+        response_msgs: list[discord.Message] = []
+        full_content: str = ""
 
         try:
-            stream = await client.chat.completions.create(**chat_params)
+            async with trigger_msg.channel.typing():
+                logger.debug("Streaming started...")
 
-            is_first_chunk = True
-            async for chunk in stream:
-                if is_first_chunk:
-                    logger.debug("Streaming started...")
-                    await typing_manager.__aenter__()
-                    typing_active = True
-                    is_first_chunk = False
+                # Step 1: Consume the stream
+                async for content in self._get_llm_stream(client, chat_params):
+                    full_content += content
 
-                content = extract_chunk_content(chunk)
-                if not content:
-                    continue
+                if not full_content:
+                    return
 
-                update_content_buffer(response_contents, content, max_len)
-
-                if chunk.choices and chunk.choices[0].finish_reason:
-                    logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
-
-            await self._finalize_response(trigger_msg, response_msgs, response_contents)
+                # Process and send the full response at once
+                final_text = process_response_text(text=full_content, sanitize=self.config.chat.sanitize_response)
+                response_msgs = await self._send_response_chunks(trigger_msg, final_text)
 
         except Exception:
-            logger.exception("Error while generating response!")
-            await trigger_msg.channel.send("⚠️ An error occurred.")
+            logger.exception("Error during response generation")
+            await trigger_msg.channel.send("⚠️ An error occurred while processing your request.")
         finally:
-            if typing_active:
-                await typing_manager.__aexit__(None, None, None)
+            self._release_node_locks(response_msgs, full_content)
+            logger.info("Response finished in %.4f seconds", time.perf_counter() - overall_start)
 
-            overall_elapsed = time.perf_counter() - overall_start
-            logger.info("Response generation finished in %s seconds!", f"{overall_elapsed:.4f}")
+    async def _send_response_chunks(self, trigger_msg: discord.Message, content: str) -> list[discord.Message]:
+        """Split the final content and send it as one or more Discord messages.
 
-            self._release_node_locks(response_msgs, response_contents)
-
-    async def _finalize_response(
-        self,
-        trigger_msg: discord.Message,
-        msgs: list[discord.Message],
-        contents: list[str],
-    ) -> None:
-        """Process the final text and update the UI one last time.
-
-        :param trigger_msg: The original trigger message.
-        :param msgs: The list of sent response messages.
-        :param contents: The raw content chunks.
+        :param trigger_msg: The original message from the user.
+        :param content: The full sanitized text to send.
+        :return: A list of the messages sent.
         """
-        full_text = "".join(contents)
-        final_text = process_response_text(text=full_text, sanitize=self.config.chat.sanitize_response)
-
-        # Split final text into 2000-char chunks for plain text sending
+        msgs: list[discord.Message] = []
         chunk_size = 2000
-        text_chunks = [final_text[i : i + chunk_size] for i in range(0, len(final_text), chunk_size)]
-        for chunk in text_chunks:
-            view = LayoutView().add_item(TextDisplay(content=chunk))
-            await self._send_response_node(trigger_msg, msgs, view=view)
+        chunks = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
 
-    async def _send_response_node(
-        self,
-        trigger_msg: discord.Message,
-        msgs: list[discord.Message],
-        content: str = "",
-        view: LayoutView | None = None,
-    ) -> None:
-        """Send a new message and initialize its MsgNode with a lock.
+        for chunk in chunks:
+            target = msgs[-1] if msgs else trigger_msg
+            new_msg = await target.reply(content=chunk, silent=True)
+            msgs.append(new_msg)
 
-        :param trigger_msg: The original trigger message.
-        :param msgs: The list of existing response messages (will be appended to).
-        :param content: Message content.
-        :param view: Message view.
+            # Initialize and lock the node so subsequent replies wait for this content
+            node = MsgNode(parent_msg=trigger_msg)
+            self.msg_nodes[new_msg.id] = node
+            await node.lock.acquire()
+
+        return msgs
+
+    async def _get_llm_stream(self, client: AsyncOpenAI, chat_params: dict[str, Any]) -> AsyncGenerator[str, None]:
+        """Wrap the OpenAI stream to yield text content chunks.
+
+        :param client: The AsyncOpenAI client instance.
+        :param chat_params: Arguments for the completions.create call.
+        :yield: Individual string chunks from the LLM.
         """
-        target = trigger_msg if not msgs else msgs[-1]
+        stream = await client.chat.completions.create(**chat_params)
+        async for chunk in stream:
+            content = extract_chunk_content(chunk)
+            if content:
+                yield content
 
-        reply_kwargs: dict[str, Any] = {
-            "content": content,
-            "view": view,
-            "silent": True,
-        }
+            if chunk.choices and chunk.choices[0].finish_reason:
+                logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
 
-        msg = await target.reply(**reply_kwargs)
-        msgs.append(msg)
+    def _release_node_locks(self, msgs: list[discord.Message], full_content: str) -> None:
+        """Update MsgNodes with the final generated text and release their locks.
 
-        node = MsgNode(parent_msg=trigger_msg)
-        self.msg_nodes[msg.id] = node
-        await node.lock.acquire()
-
-    def _release_node_locks(self, msgs: list[discord.Message], contents: list[str]) -> None:
-        """Update MsgNodes with final text and release their locks.
-
-        :param msgs: The list of sent messages.
-        :param contents: The list of content chunks corresponding to messages.
+        :param msgs: The list of messages sent during this response cycle.
+        :param full_content: The complete text generated by the LLM.
         """
-        full_content = "".join(contents)
-
         for msg in msgs:
             node = self.msg_nodes.get(msg.id)
             if node:
