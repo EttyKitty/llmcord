@@ -8,11 +8,8 @@
             "source.fixAll": "explicit",
             "source.organizeImports": "explicit"
         },
-        "editor.defaultFormatter": "charliermarsh.ruff"
-    },
-    "python.testing.pytestArgs": [
-    "."
-    ],
-    "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true,
+    "ruff.lint.select": [
+        "ALL"
+    ]
+    }
 }
