@@ -11,7 +11,6 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator
 from typing import Any, Final
 
 import discord
@@ -22,7 +21,7 @@ from openai import AsyncOpenAI
 
 from .commands_manager import setup
 from .config_manager import RootConfig, config_manager
-from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node
+from .utils import MsgNode, build_chat_params, build_messages_payload, get_llm_provider_model, get_llm_specials, get_llm_stream, get_provider_config, init_msg_node
 from .utils_discord import fetch_history, is_message_allowed
 from .utils_logging import request_logger
 from .utils_regex import process_response_text, replace_placeholders
@@ -173,7 +172,7 @@ class LLMCordBot(commands.Bot):
         elapsed_time = time.perf_counter() - start_time
         logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
 
-        # 2. Send the Request + 3. Get the Response (Fuck, why are they in one function)
+        # 2. Send the Request + 3. Get the Response
         await self._generate_response(message, openai_client, chat_params)
 
         # 4. Cleanup
@@ -207,8 +206,8 @@ class LLMCordBot(commands.Bot):
     ) -> None:
         """Handle the lifecycle of an LLM request and its delivery to Discord.
 
-        This method coordinates the API stream, manages the Discord typing indicator,
-        and ensures response messages are sent and tracked correctly.
+        This method orchestrates the stream consumption and ensures the resulting
+        text is partitioned and sent to the correct Discord channel.
 
         :param trigger_msg: The message that triggered the response.
         :param client: The initialized OpenAI client.
@@ -217,32 +216,48 @@ class LLMCordBot(commands.Bot):
         overall_start: float = time.perf_counter()
         request_logger.log(chat_params)
 
-        response_msgs: list[discord.Message] = []
         full_content: str = ""
+        response_msgs: list[discord.Message] = []
 
         try:
-            async with trigger_msg.channel.typing():
-                logger.debug("Streaming started...")
+            # 1. Consume the stream and accumulate content
+            full_content = await self._consume_stream(trigger_msg, client, chat_params)
 
-                # Step 1: Consume the stream
-                async for content in self._get_llm_stream(client, chat_params):
-                    full_content += content
+            if not full_content:
+                return
 
-                if not full_content:
-                    logger.warning("LLM returned empty content for message from %s", trigger_msg.author.name)
-                    await trigger_msg.channel.send("[⚠️ The response was empty. Something went wrong with the LLM.]")
-                    return
+            # 2. Process the text (Sanitize, regex, etc.)
+            final_text: str = process_response_text(
+                text=full_content,
+                sanitize=self.config.chat.sanitize_response,
+            )
 
-                # Process and send the full response at once
-                final_text = process_response_text(text=full_content, sanitize=self.config.chat.sanitize_response)
-                response_msgs = await self._send_response_chunks(trigger_msg, final_text)
+            # 3. Send the response in chunks
+            response_msgs = await self._send_response_chunks(trigger_msg, final_text)
 
         except Exception:
             logger.exception("Error during response generation")
-            await trigger_msg.channel.send("[⚠️ An error occurred while processing your request.]")
+            await trigger_msg.channel.send("⚠️ An error occurred while processing your request.")
         finally:
             self._release_node_locks(response_msgs, full_content)
             logger.info("Response finished in %.4f seconds", time.perf_counter() - overall_start)
+
+    async def _consume_stream(self, trigger_msg: discord.Message, client: AsyncOpenAI, chat_params: dict[str, Any]) -> str:
+        """Consume the LLM stream and maintain the Discord typing indicator.
+
+        :param trigger_msg: The message that triggered the response.
+        :param client: The initialized OpenAI client.
+        :param chat_params: The parameters for the API call.
+        :return: The full accumulated string content from the LLM.
+        """
+        full_content: list[str] = []
+
+        async with trigger_msg.channel.typing():
+            logger.debug("Streaming started...")
+            async for content in get_llm_stream(client, chat_params):
+                full_content.extend(content)
+
+        return "".join(full_content)
 
     async def _send_response_chunks(self, trigger_msg: discord.Message, content: str) -> list[discord.Message]:
         """Split the final content and send it as one or more Discord messages.
@@ -266,22 +281,6 @@ class LLMCordBot(commands.Bot):
             await node.lock.acquire()
 
         return msgs
-
-    async def _get_llm_stream(self, client: AsyncOpenAI, chat_params: dict[str, Any]) -> AsyncGenerator[str, None]:
-        """Wrap the OpenAI stream to yield text content chunks.
-
-        :param client: The AsyncOpenAI client instance.
-        :param chat_params: Arguments for the completions.create call.
-        :yield: Individual string chunks from the LLM.
-        """
-        stream = await client.chat.completions.create(**chat_params)
-        async for chunk in stream:
-            content = extract_chunk_content(chunk)
-            if content:
-                yield content
-
-            if chunk.choices and chunk.choices[0].finish_reason:
-                logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
 
     def _release_node_locks(self, msgs: list[discord.Message], full_content: str) -> None:
         """Update MsgNodes with the final generated text and release their locks.
