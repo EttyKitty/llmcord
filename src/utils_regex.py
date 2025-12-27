@@ -67,7 +67,15 @@ def process_response_text(text: str, *, sanitize: bool) -> str:
 
 
 def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.ClientUser, model: str, provider: str) -> str:
-    """Replace dynamic placeholders in prompt strings."""
+    """Replace dynamic placeholders in prompt strings.
+
+    :param text: The text containing placeholders to replace.
+    :param msg: The Discord message providing context.
+    :param bot_user: The bot's client user object.
+    :param model: The LLM model identifier.
+    :param provider: The LLM provider identifier.
+    :return: The text with all placeholders replaced.
+    """
     now = datetime.now(timezone.utc)
     user_roles = getattr(msg.author, "roles", [])
     user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or ""
@@ -99,4 +107,9 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
 
 
 def sanitize_symbols(username: str) -> str:
+    """Remove non-alphanumeric characters from username, keeping underscores and hyphens.
+
+    :param username: The username to sanitize.
+    :return: The sanitized username containing only [a-zA-Z0-9_-].
+    """
     return REGEX_USER_NAME_SANITIZER.sub("", username)

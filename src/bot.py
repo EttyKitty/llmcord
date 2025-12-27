@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Final
 
 import discord
 import httpx
@@ -22,14 +22,14 @@ from openai import AsyncOpenAI
 
 from .commands_manager import setup
 from .config_manager import RootConfig, config_manager
-from .utils_logging import request_logger
 from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node
 from .utils_discord import fetch_history, is_message_allowed
+from .utils_logging import request_logger
 from .utils_regex import process_response_text, replace_placeholders
 
-MAX_MESSAGE_NODES = 500
+MAX_MESSAGE_NODES: Final[int] = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
-
+DISCORD_CHAR_LIMIT: Final[int] = 2000
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +229,8 @@ class LLMCordBot(commands.Bot):
                     full_content += content
 
                 if not full_content:
+                    logger.warning("LLM returned empty content for message from %s", trigger_msg.author.name)
+                    await trigger_msg.channel.send("[⚠️ The response was empty. Something went wrong with the LLM.]")
                     return
 
                 # Process and send the full response at once
@@ -237,7 +239,7 @@ class LLMCordBot(commands.Bot):
 
         except Exception:
             logger.exception("Error during response generation")
-            await trigger_msg.channel.send("⚠️ An error occurred while processing your request.")
+            await trigger_msg.channel.send("[⚠️ An error occurred while processing your request.]")
         finally:
             self._release_node_locks(response_msgs, full_content)
             logger.info("Response finished in %.4f seconds", time.perf_counter() - overall_start)
@@ -250,16 +252,16 @@ class LLMCordBot(commands.Bot):
         :return: A list of the messages sent.
         """
         msgs: list[discord.Message] = []
-        chunk_size = 2000
-        chunks = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
+        chunk_size = DISCORD_CHAR_LIMIT
+        chunks: list[str] = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
 
         for chunk in chunks:
-            target = msgs[-1] if msgs else trigger_msg
-            new_msg = await target.reply(content=chunk, silent=True)
+            target: discord.Message = msgs[-1] if msgs else trigger_msg
+            new_msg: discord.Message = await target.reply(content=chunk, silent=True)
             msgs.append(new_msg)
 
             # Initialize and lock the node so subsequent replies wait for this content
-            node = MsgNode(parent_msg=trigger_msg)
+            node: MsgNode = MsgNode()
             self.msg_nodes[new_msg.id] = node
             await node.lock.acquire()
 
