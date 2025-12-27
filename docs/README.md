@@ -59,19 +59,19 @@ Or local models with:
 ---
 
 ### And more:
-- ⭐**Zero-Hassle Launcher:** Included `starter.bat` automatically creates a virtual environment, installs/updates dependencies, and handles auto-restarts.
 - **Multi-Modal Support:** Handles images (Vision models) and text file attachments (.txt, .py, .c, etc.).
+- **Customizable Personality:** Pre-history prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
+- **Identity Aware:** Natively uses the `name` API parameter for OpenAI/xAI. ⭐For other providers, the `prefix_users` option automatically prepends user IDs and Display Names to messages so the bot knows who is speaking.
+- **Flexible Model Switching:** Change the global model with `/model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/channelmodel`.
+- **Efficient Caching:** Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls.
+- **Fully Asynchronous**
+- ⭐**Zero-Hassle Launcher:** Included `starter.bat` automatically creates a virtual environment, installs/updates dependencies, and handles auto-restarts.
 - ⭐**Smart Context Management:** Uses `tiktoken` to enforce `max_input_tokens`, automatically dropping older messages to ensure you never hit API limits.
 - ⭐**Advanced Prompting:** Supports a `post_history_prompt` to inject instructions at the very end of the context, perfect for reinforcing formatting rules or jailbreaks.
 - ⭐**Clean Output:** Automatically strips `<think>` tags from reasoning models (like DeepSeek R1) and includes a `sanitize_response` option to convert smart typography to ASCII and collapse excessive whitespace.
 - ⭐**Multi-Modal Output Fix**: Mistral model `magistral` notably responds with a multi-modal list, that includes reasoning and text outputs. These responses are now properly accepted by llmcord, without errors.
-- **Customizable Personality:** Pre-history prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
-- **Identity Aware:** Natively uses the `name` API parameter for OpenAI/xAI. ⭐For other providers, the `prefix_users` option automatically prepends user IDs and Display Names to messages so the bot knows who is speaking.
-- **Flexible Model Switching:** Change the global model with `/model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/channelmodel`.
-- **Streamed Responses:** Turns green when complete and automatically handles long message splitting (only in embed response mode).
 - ⭐**Hot Reloading:** Use `/reload` to reload `config.yaml` settings without restarting the bot.
-- **Efficient Caching:** Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls.
-- **Fully Asynchronous**
+
 
 ## Setting up and Running
 
@@ -105,15 +105,4 @@ python main.py
 
 ## Notes
 
-- If you're having issues, try my suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
-- PRs are welcome :)
-
-## Star History
-
-<a href="https://star-history.com/#jakobdylanc/llmcord&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
-  </picture>
-</a>
+- If you're having issues, try jakobdylanc suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
