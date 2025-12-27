@@ -105,4 +105,4 @@ python main.py
 
 ## Notes
 
-- If you're having issues, try jakobdylanc suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
+- If you're having issues, try jakobdylanc's suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
