@@ -10,9 +10,12 @@
         },
         "editor.defaultFormatter": "charliermarsh.ruff"
     },
-    "python.testing.pytestArgs": [
-    "."
+    "python.analysis.typeCheckingMode": "standard",
+    "ruff.lineLength": 320,
+    "ruff.lint.extendSelect": [
+        "ALL"
     ],
-    "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true,
+    "ruff.lint.select": [
+        "ALL"
+    ]
 }
