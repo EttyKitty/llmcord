@@ -387,18 +387,52 @@ async def init_msg_node(
         node.user_display_name = author.display_name if node.role == "user" else None
         node.has_bad_attachments |= len(msg.attachments) > len(to_download)
 
-async def get_llm_stream(client: AsyncOpenAI, chat_params: dict[str, Any]) -> AsyncGenerator[str, None]:
-    """Wrap the OpenAI stream to yield text content chunks.
+
+async def get_llm_stream(client: AsyncOpenAI, chat_params: dict[str, Any]) -> AsyncGenerator[str | list[dict[str, Any]], None]:
+    """Wrap the OpenAI stream to yield text content chunks or tool calls.
 
     :param client: The AsyncOpenAI client instance.
     :param chat_params: Arguments for the completions.create call.
-    :yield: Individual string chunks from the LLM.
+    :yield: Individual string chunks or a list of tool calls.
     """
     stream = await client.chat.completions.create(**chat_params)
-    async for chunk in stream:
-        content = extract_chunk_content(chunk)
-        if content:
-            yield content
+    tc_buffer: dict[int, dict[str, Any]] = {}
 
-        if chunk.choices and chunk.choices[0].finish_reason:
-            logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+
+        delta = chunk.choices[0].delta
+
+        # 1. Handle Text
+        if hasattr(delta, "content") and delta.content:
+            yield delta.content
+
+        # 2. Handle Tool Calls
+        if hasattr(delta, "tool_calls") and delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = getattr(tc_delta, "index", 0)
+
+                if idx not in tc_buffer:
+                    tc_buffer[idx] = {
+                        "id": getattr(tc_delta, "id", None),
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+
+                # Update ID if it arrives later
+                if getattr(tc_delta, "id", None):
+                    tc_buffer[idx]["id"] = tc_delta.id
+
+                # Accumulate function name and arguments
+                if hasattr(tc_delta, "function") and tc_delta.function:
+                    if hasattr(tc_delta.function, "name") and tc_delta.function.name:
+                        tc_buffer[idx]["function"]["name"] += tc_delta.function.name
+                    if hasattr(tc_delta.function, "arguments") and tc_delta.function.arguments:
+                        tc_buffer[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+    if tc_buffer:
+        # Filter out any incomplete tool calls that might crash the bot
+        valid_calls = [v for v in tc_buffer.values() if v["function"]["name"] and v["id"]]
+        if valid_calls:
+            yield valid_calls

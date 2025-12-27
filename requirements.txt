@@ -4,3 +4,4 @@ openai
 pyyaml
 types-PyYAML
 tiktoken
+ddgs

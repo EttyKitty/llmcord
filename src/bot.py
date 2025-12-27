@@ -7,12 +7,13 @@ OpenAI-compatible APIs.
 """
 
 import asyncio
+import json
 import logging
-import sys
 import threading
 import time
 from typing import Any, Final
 
+import aiohttp
 import discord
 import httpx
 import tiktoken
@@ -21,6 +22,7 @@ from openai import AsyncOpenAI
 
 from .commands_manager import setup
 from .config_manager import RootConfig, config_manager
+from .tools import tool_manager
 from .utils import MsgNode, build_chat_params, build_messages_payload, get_llm_provider_model, get_llm_specials, get_llm_stream, get_provider_config, init_msg_node
 from .utils_discord import fetch_history, is_message_allowed
 from .utils_logging import request_logger
@@ -203,35 +205,77 @@ class LLMCordBot(commands.Bot):
         client: AsyncOpenAI,
         chat_params: dict[str, Any],
     ) -> None:
-        """Handle the lifecycle of an LLM request and its delivery to Discord.
-
-        This method orchestrates the stream consumption and ensures the resulting
-        text is partitioned and sent to the correct Discord channel.
-
-        :param trigger_msg: The message that triggered the response.
-        :param client: The initialized OpenAI client.
-        :param chat_params: The parameters for the API call.
-        """
+        """Handle the lifecycle of an LLM request, including tool calling loops."""
         overall_start: float = time.perf_counter()
         request_logger.log(chat_params)
+
+        chat_params["tools"] = tool_manager.get_tool_definitions()
+        chat_params["tool_choice"] = "auto"
 
         full_content: str = ""
         response_msgs: list[discord.Message] = []
 
         try:
-            # 1. Consume the stream and accumulate content
-            full_content = await self._consume_stream(trigger_msg, client, chat_params)
+            for i in range(5):
+                iteration_text: str = ""
+                tool_calls: list[dict[str, Any]] = []
+
+                async with trigger_msg.channel.typing():
+                    async for chunk in get_llm_stream(client, chat_params):
+                        if isinstance(chunk, str):
+                            iteration_text += chunk
+                        else:
+                            tool_calls = chunk
+
+                if tool_calls:
+                    # Log for debugging if needed
+                    logger.debug("Iteration %d: LLM requested %d tool calls", i, len(tool_calls))
+
+                    chat_params["messages"].append(
+                        {
+                            "role": "assistant",
+                            "tool_calls": tool_calls,
+                            "content": iteration_text or None,
+                        },
+                    )
+
+                    for tc in tool_calls:
+                        # Use .get() and provide defaults to prevent KeyError
+                        func_info = tc.get("function", {})
+                        name = func_info.get("name")
+                        args_str = func_info.get("arguments", "{}")
+
+                        if not name:
+                            continue
+
+                        try:
+                            args = json.loads(args_str) if args_str else {}
+                        except json.JSONDecodeError:
+                            logger.exception("Failed to parse tool arguments: %s", args_str)
+                            args = {}
+
+                        result = await tool_manager.execute_tool(name, args)
+
+                        chat_params["messages"].append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.get("id"),
+                                "name": name,
+                                "content": result,
+                            },
+                        )
+                    continue
+
+                full_content = iteration_text
+                break
 
             if not full_content:
                 return
 
-            # 2. Process the text (Sanitize, regex, etc.)
             final_text: str = process_response_text(
                 text=full_content,
                 sanitize=self.config.chat.sanitize_response,
             )
-
-            # 3. Send the response in chunks
             response_msgs = await self._send_response_chunks(trigger_msg, final_text)
 
         except Exception:
@@ -240,23 +284,6 @@ class LLMCordBot(commands.Bot):
         finally:
             self._release_node_locks(response_msgs, full_content)
             logger.info("Response finished in %.4f seconds", time.perf_counter() - overall_start)
-
-    async def _consume_stream(self, trigger_msg: discord.Message, client: AsyncOpenAI, chat_params: dict[str, Any]) -> str:
-        """Consume the LLM stream and maintain the Discord typing indicator.
-
-        :param trigger_msg: The message that triggered the response.
-        :param client: The initialized OpenAI client.
-        :param chat_params: The parameters for the API call.
-        :return: The full accumulated string content from the LLM.
-        """
-        full_content: list[str] = []
-
-        async with trigger_msg.channel.typing():
-            logger.debug("Streaming started...")
-            async for content in get_llm_stream(client, chat_params):
-                full_content.extend(content)
-
-        return "".join(full_content)
 
     async def _send_response_chunks(self, trigger_msg: discord.Message, content: str) -> list[discord.Message]:
         """Split the final content and send it as one or more Discord messages.
