@@ -20,9 +20,9 @@ import tiktoken
 from discord.ext import commands
 from openai import AsyncOpenAI
 
-from .commands import setup
-from .config import RootConfig, config_manager
-from .logger import request_logger
+from .commands_manager import setup
+from .config_manager import RootConfig, config_manager
+from .utils_logging import request_logger
 from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node
 from .utils_discord import fetch_history, is_message_allowed
 from .utils_regex import process_response_text, replace_placeholders
