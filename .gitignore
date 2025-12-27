@@ -9,7 +9,7 @@
 !*.py
 
 !Dockerfile
-!config-example.yaml
+!config.default.yaml
 !docker-compose.yaml
 !requirements.txt
 !starter.bat
