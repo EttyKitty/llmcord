@@ -6,11 +6,9 @@ chains and provides utility functions for sanitizing text input/output.
 
 import asyncio
 import logging
-import re
 from base64 import b64encode
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Literal
 
 import discord
@@ -26,26 +24,12 @@ from openai.types.chat import (
 )
 
 from .config import ConfigValue, config_manager
-from .discord_utils import download_attachment, get_component_text, get_embed_text, is_supported_attachment
+from .utils_discord import download_attachment, get_component_text, get_embed_text, is_supported_attachment
+from .utils_regex import sanitize_symbols
 
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
-REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
-REGEX_MULTI_SPACE = re.compile(r" {2,}")
-REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
-REGEX_THINK_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
-REGEX_USER_NAME_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]")
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-TYPOGRAPHY_MAP = str.maketrans(
-    {
-        "“": '"',
-        "”": '"',
-        "‘": "'",  # noqa: RUF001
-        "’": "'",  # noqa: RUF001
-        "—": "-",
-        "…": "...",
-    },
-)
 
 logger = logging.getLogger(__name__)
 
@@ -78,22 +62,6 @@ class MsgNode:
     parent_msg: discord.Message | None = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-def clean_response(text: str) -> str:
-    """Sanitizes the response text by normalizing typography and whitespace.
-
-    This function replaces typographic quotes/dashes, reduces excessive
-    newlines and spaces, and trims trailing whitespace.
-
-    :param text: The raw text string to clean.
-    :return: The cleaned and normalized string.
-    """
-    text = text.translate(TYPOGRAPHY_MAP)
-    text = REGEX_MULTI_SPACE.sub(" ", text)
-    text = REGEX_EXCESSIVE_NEWLINES.sub("\n\n", text)
-    text = REGEX_TRAILING_WHITESPACE.sub("", text)
-    return text.strip()
 
 
 def get_llm_specials(provider: str, model: str) -> tuple[bool, bool]:
@@ -137,38 +105,6 @@ def extract_chunk_content(chunk: ChatCompletionChunk) -> str:
         return parts_text
 
     return str(delta_content)
-
-
-def update_content_buffer(buffer: list[str], new_content: str, max_len: int) -> None:
-    """Append content to the buffer, creating new chunks if max length is exceeded.
-
-    :param buffer: The list of message content chunks.
-    :param new_content: The new text to append.
-    :param max_len: The maximum length of a single message.
-    """
-    if not buffer or len(buffer[-1]) + len(new_content) > max_len:
-        buffer.append("")
-    buffer[-1] += new_content
-
-
-def process_response_text(text: str, *, sanitize: bool) -> str:
-    """Sanitize and process the final response text.
-
-    :param text: The raw response text.
-    :param sanitize: Whether to apply the clean_response utility.
-    :return: The processed text.
-    """
-    final_text = text
-    if sanitize:
-        logger.debug("Sanitizing text...")
-        final_text = clean_response(final_text)
-
-    if "<think>" in final_text:
-        logger.debug("Removing <think> block...")
-        final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
-
-    return final_text
-
 
 def get_llm_provider_model(channel_id: int, channel_models: dict[int, str], default_model: str) -> tuple[str, str]:
     """Resolve the LLM provider and model for a specific channel.
@@ -293,37 +229,6 @@ def is_admin(user_id: int) -> bool:
     return user_id in config_manager.config.discord.permissions.users.admin_ids
 
 
-def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.ClientUser, model: str, provider: str) -> str:
-    """Replace dynamic placeholders in prompt strings."""
-    now = datetime.now(timezone.utc)
-    user_roles = getattr(msg.author, "roles", [])
-    user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or ""
-    guild_emojis = getattr(msg.guild, "emojis", [])
-    guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or ""
-
-    placeholders = {
-        "{date}": now.strftime("%B %d %Y"),
-        "{time}": now.strftime("%H:%M:%S %Z%z"),
-        "{bot_name}": bot_user.display_name,
-        "{bot_id}": str(bot_user.id),
-        "{model}": model,
-        "{provider}": provider,
-        "{user_display_name}": msg.author.display_name,
-        "{user_id}": str(msg.author.id),
-        "{user_roles}": user_roles_str,
-        "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-        "{guild_description}": (msg.guild.description or "") if msg.guild else "",
-        "{guild_emojis}": guild_emojis_str,
-        "{channel_name}": getattr(msg.channel, "name", ""),
-        "{channel_topic}": getattr(msg.channel, "topic", ""),
-        "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
-    }
-    for key, value in placeholders.items():
-        text = text.replace(key, str(value))
-
-    return text.strip()
-
-
 def create_message_payload(
     node: MsgNode,
     max_text: int,
@@ -370,8 +275,7 @@ def create_message_payload(
     if node.role == "user":
         user_payload: ChatCompletionUserMessageParam = {"role": "user", "content": content}
         if accept_usernames and node.user_id:
-            sanitized_name = REGEX_USER_NAME_SANITIZER.sub("", node.user_display_name or "")[:64]
-            user_payload["name"] = sanitized_name or str(node.user_id)
+            user_payload["name"] = sanitize_symbols(node.user_display_name or "")[:64] or str(node.user_id)
         message_payload = user_payload
     else:
         message_payload = {"role": "assistant", "content": formatted_text}
