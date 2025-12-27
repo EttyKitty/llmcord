@@ -45,7 +45,6 @@ class MsgNode:
     :param user_display_name: The display name of the sender.
     :param has_bad_attachments: Indicates if the message had unsupported attachments.
     :param fetch_parent_failed: Indicates if the parent message could not be retrieved.
-    :param parent_msg: The Discord message object of the parent node.
     :param lock: An async lock to manage concurrent access to this node.
     """
 
@@ -58,8 +57,6 @@ class MsgNode:
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
-
-    parent_msg: discord.Message | None = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -105,6 +102,7 @@ def extract_chunk_content(chunk: ChatCompletionChunk) -> str:
         return parts_text
 
     return str(delta_content)
+
 
 def get_llm_provider_model(channel_id: int, channel_models: dict[int, str], default_model: str) -> tuple[str, str]:
     """Resolve the LLM provider and model for a specific channel.
@@ -387,4 +385,4 @@ async def init_msg_node(
             author = msg.guild.get_member(author.id) or author
 
         node.user_display_name = author.display_name if node.role == "user" else None
-        node.has_bad_attachments = len(msg.attachments) > len(to_download)
+        node.has_bad_attachments |= len(msg.attachments) > len(to_download)
