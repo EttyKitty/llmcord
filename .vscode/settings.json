@@ -8,13 +8,6 @@
             "source.fixAll": "explicit",
             "source.organizeImports": "explicit"
         },
-        "editor.defaultFormatter": "charliermarsh.ruff"
-    },
-    "python.analysis.typeCheckingMode": "standard",
-    "ruff.lineLength": 320,
-    "ruff.lint.extendSelect": [
-        "ALL"
-    ],
     "ruff.lint.select": [
         "ALL"
     ]
