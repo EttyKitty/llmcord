@@ -10,7 +10,7 @@ import time
 import discord
 import httpx
 
-from .config import PermissionsConfig
+from .config_manager import PermissionsConfig
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
-from .config import ConfigValue, config_manager
+from .config_manager import ConfigValue, config_manager
 from .utils_discord import download_attachment, get_component_text, get_embed_text, is_supported_attachment
 from .utils_regex import sanitize_symbols
 

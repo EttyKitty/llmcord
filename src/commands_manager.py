@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.app_commands import Choice
 from discord.ext import commands
 
-from .config import EDITABLE_SETTINGS, config_manager
+from .config_manager import EDITABLE_SETTINGS, config_manager
 from .utils import is_admin
 
 logger = logging.getLogger(__name__)
