@@ -7,7 +7,7 @@ chains and provides utility functions for sanitizing text input/output.
 import asyncio
 import logging
 from base64 import b64encode
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -386,3 +386,19 @@ async def init_msg_node(
 
         node.user_display_name = author.display_name if node.role == "user" else None
         node.has_bad_attachments |= len(msg.attachments) > len(to_download)
+
+async def get_llm_stream(client: AsyncOpenAI, chat_params: dict[str, Any]) -> AsyncGenerator[str, None]:
+    """Wrap the OpenAI stream to yield text content chunks.
+
+    :param client: The AsyncOpenAI client instance.
+    :param chat_params: Arguments for the completions.create call.
+    :yield: Individual string chunks from the LLM.
+    """
+    stream = await client.chat.completions.create(**chat_params)
+    async for chunk in stream:
+        content = extract_chunk_content(chunk)
+        if content:
+            yield content
+
+        if chunk.choices and chunk.choices[0].finish_reason:
+            logger.debug("Streaming finished. Reason: %s", chunk.choices[0].finish_reason)
