@@ -4,7 +4,8 @@ REM https://github.com/coffin399/llmcord-JP-plana/blob/advanced-bot-utilities/st
 chcp 65001 >nul
 title llmcord
 
-set VENV_DIR=.venv
+set "VENV_DIR=%~dp0.venv"
+set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
 
 echo ================================
 echo llmcord
@@ -38,6 +39,11 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo [SUCCESS] Virtual environment activated.
+echo.
+
+REM Verify we are using the correct Python
+echo [INFO] Verifying Python location...
+"%PYTHON_EXE%" -c "import sys; print('Using Python at: ' + sys.executable)"
 echo.
 
 REM Install/Update required packages
