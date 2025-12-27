@@ -7,6 +7,7 @@ chains and provides utility functions for sanitizing text input/output.
 import asyncio
 import logging
 import re
+from base64 import b64encode
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from openai.types.chat import (
 )
 
 from .config import ConfigValue, config_manager
+from .discord_utils import download_attachment, get_component_text, get_embed_text, is_supported_attachment
 
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
@@ -429,3 +431,56 @@ def build_messages_payload(
 
     logger.debug("Context ready. Messages: %d.", len(messages_payload))
     return messages_payload[::-1]
+
+
+async def init_msg_node(
+    msg: discord.Message,
+    msg_nodes: dict[int, MsgNode],
+    bot_user: discord.ClientUser,
+    httpx_client: httpx.AsyncClient,
+) -> None:
+    """Initialize a MsgNode for a message, processing attachments and text sources.
+
+    :param msg: The Discord message to process.
+    :param msg_nodes: The dictionary of processed message nodes.
+    :param bot_user: The bot's client user to determine roles.
+    :param httpx_client: The shared HTTPX client for downloads.
+    """
+    node = msg_nodes.setdefault(msg.id, MsgNode())
+    if node.text is not None:
+        return
+
+    async with node.lock:
+        if node.text is not None:
+            return
+
+        text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
+        text_parts.extend(get_embed_text(embed) for embed in msg.embeds)
+        text_parts.extend(get_component_text(c) for c in msg.components)
+
+        to_download = [a for a in msg.attachments if is_supported_attachment(a)]
+        downloads = await asyncio.gather(*(download_attachment(httpx_client, a) for a in to_download))
+
+        node.images = []
+        for attachment, resp in downloads:
+            if resp is None:
+                node.has_bad_attachments = True
+                continue
+
+            content_type = attachment.content_type or ""
+            if content_type.startswith("text"):
+                text_parts.append(resp.text)
+            elif content_type.startswith("image"):
+                base64_data = b64encode(resp.content).decode()
+                node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
+
+        node.text = "\n".join(filter(None, text_parts))
+        node.role = "assistant" if msg.author == bot_user else "user"
+        node.user_id = msg.author.id if node.role == "user" else None
+
+        author = msg.author
+        if msg.guild and not isinstance(author, discord.Member):
+            author = msg.guild.get_member(author.id) or author
+
+        node.user_display_name = author.display_name if node.role == "user" else None
+        node.has_bad_attachments = len(msg.attachments) > len(to_download)
