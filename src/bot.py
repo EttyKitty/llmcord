@@ -11,7 +11,6 @@ import logging
 import sys
 import threading
 import time
-from base64 import b64encode
 from typing import Any
 
 import discord
@@ -23,9 +22,9 @@ from openai import AsyncOpenAI
 
 from .commands import setup
 from .config import RootConfig, config_manager
-from .discord_utils import download_attachment, fetch_history, get_component_text, get_embed_text, is_message_allowed, is_supported_attachment
+from .discord_utils import fetch_history, is_message_allowed
 from .logger import request_logger
-from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, process_response_text, replace_placeholders, update_content_buffer
+from .utils import MsgNode, build_chat_params, build_messages_payload, extract_chunk_content, get_llm_provider_model, get_llm_specials, get_provider_config, init_msg_node, process_response_text, replace_placeholders, update_content_buffer
 
 MAX_MESSAGE_NODES = 500
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
@@ -138,6 +137,9 @@ class LLMCordBot(commands.Bot):
         # - Build the History
         message_history = await self._prepare_message_history(message, self.config.chat.max_messages)
 
+        # - Initialize message nodes
+        await asyncio.gather(*(init_msg_node(m, self.msg_nodes, self.safe_user, self.httpx_client) for m in message_history))
+
         # - Build the Payload
         system_token_count = 0
         if pre_history:
@@ -189,60 +191,12 @@ class LLMCordBot(commands.Bot):
 
         logger.debug("Initializing message nodes...")
 
-        message_history = await fetch_history(
+        return await fetch_history(
             message=message,
             max_messages=max_messages,
             use_channel_context=use_channel_context,
             bot_user=self.safe_user,
         )
-
-        await asyncio.gather(*(self._init_msg_node(m) for m in message_history))
-
-        return message_history
-
-    async def _init_msg_node(self, msg: discord.Message) -> None:
-        """Initialize a MsgNode for a message, processing attachments and text sources.
-
-        :param msg: The Discord message to process.
-        """
-        node = self.msg_nodes.setdefault(msg.id, MsgNode())
-        if node.text is not None:
-            return
-
-        async with node.lock:
-            if node.text is not None:
-                return
-
-            text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
-            text_parts.extend(get_embed_text(error) for error in msg.embeds)
-            text_parts.extend(get_component_text(c) for c in msg.components)
-
-            to_download = [a for a in msg.attachments if is_supported_attachment(a)]
-            downloads = await asyncio.gather(*(download_attachment(self.httpx_client, a) for a in to_download))
-
-            node.images = []
-            for attachment, resp in downloads:
-                if resp is None:
-                    node.has_bad_attachments = True
-                    continue
-
-                content_type = attachment.content_type or ""
-                if content_type.startswith("text"):
-                    text_parts.append(resp.text)
-                elif content_type.startswith("image"):
-                    base64_data = b64encode(resp.content).decode()
-                    node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
-
-            node.text = "\n".join(filter(None, text_parts))
-            node.role = "assistant" if msg.author == self.safe_user else "user"
-            node.user_id = msg.author.id if node.role == "user" else None
-
-            author = msg.author
-            if msg.guild and not isinstance(author, discord.Member):
-                author = msg.guild.get_member(author.id) or author
-
-            node.user_display_name = author.display_name if node.role == "user" else None
-            node.has_bad_attachments = len(msg.attachments) > len(to_download)
 
     async def _generate_response(
         self,
