@@ -118,34 +118,41 @@ class LLMCordBot(commands.Bot):
             logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
             return
 
-        # =============================
-        # === 1. Build the Request ====
-        # =============================
+        try:
+            # 1. Prepare the request payload
+            start_time = time.perf_counter()
+            client, chat_params = await self._prepare_llm_request(message)
 
-        # - Build Context
-        start_time = time.perf_counter()
+            logger.info("Request prepared in %.4f seconds", time.perf_counter() - start_time)
+
+            # 2. Generate and send response
+            await self._generate_response(message, client, chat_params)
+        except Exception:
+            logger.exception("Failed to process message from %s", message.author.name)
+        finally:
+            self._prune_msg_nodes()
+
+    async def _prepare_llm_request(self, message: discord.Message) -> tuple[AsyncOpenAI, dict[str, Any]]:
+        """Build the history, calculate tokens, and construct the LLM payload.
+
+        :param message: The triggering Discord message.
+        :return: A tuple of the OpenAI client and the chat parameters.
+        """
         provider, model = get_llm_provider_model(
             channel_id=message.channel.id,
             channel_models=self.config.chat.channel_models,
             default_model=self.config.chat.default_model,
         )
 
-        # - Generate system prompts early to calculate their token cost
+        # Build History
+        message_history = await self._prepare_message_history(message, self.config.chat.max_messages)
+        await asyncio.gather(*(init_msg_node(m, self.msg_nodes, self.safe_user, self.httpx_client) for m in message_history))
+
+        # Handle System Prompts & Tokens
         pre_history = replace_placeholders(self.config.prompts.pre_history, message, self.safe_user, model, provider)
         post_history = replace_placeholders(self.config.prompts.post_history, message, self.safe_user, model, provider)
 
-        # - Build the History
-        message_history = await self._prepare_message_history(message, self.config.chat.max_messages)
-
-        # - Initialize message nodes
-        await asyncio.gather(*(init_msg_node(m, self.msg_nodes, self.safe_user, self.httpx_client) for m in message_history))
-
-        # - Build the Payload
-        system_token_count = 0
-        if pre_history:
-            system_token_count += len(TOKENIZER.encode(pre_history))
-        if post_history:
-            system_token_count += len(TOKENIZER.encode(post_history))
+        system_token_count = sum(len(TOKENIZER.encode(p)) for p in (pre_history, post_history) if p)
 
         accept_images, accept_usernames = get_llm_specials(provider, model)
         messages_payload = build_messages_payload(
@@ -159,24 +166,16 @@ class LLMCordBot(commands.Bot):
             accept_usernames=accept_usernames,
         )
 
-        # - Insert Prompts
         if pre_history:
             messages_payload.insert(0, {"role": "system", "content": pre_history})
         if post_history:
             messages_payload.append({"role": "system", "content": post_history})
 
-        # - Finish the Payload
         provider_config, openai_client = get_provider_config(provider=provider, providers_config=self.config.llm.providers, client_cache=self.openai_clients, httpx_client=self.httpx_client)
+
         chat_params = build_chat_params(model=model, messages=messages_payload, provider=provider, provider_config=provider_config, llm_models_config=self.config.llm.models)
 
-        elapsed_time = time.perf_counter() - start_time
-        logger.info("Request prepared in %s seconds!", f"{elapsed_time:.4f}")
-
-        # 2. Send the Request + 3. Get the Response
-        await self._generate_response(message, openai_client, chat_params)
-
-        # 4. Cleanup
-        self._prune_msg_nodes()
+        return openai_client, chat_params
 
     async def _prepare_message_history(self, message: discord.Message, max_messages: int) -> list[discord.Message]:
         """Fetch and initialize the message history for context building.
@@ -267,15 +266,32 @@ class LLMCordBot(commands.Bot):
         :return: A list of the messages sent.
         """
         msgs: list[discord.Message] = []
-        chunk_size = DISCORD_CHAR_LIMIT
-        chunks: list[str] = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
+        remaining_text = content
 
-        for chunk in chunks:
+        while remaining_text:
+            if len(remaining_text) <= DISCORD_CHAR_LIMIT:
+                chunk = remaining_text
+                remaining_text = ""
+            else:
+                # Try to split at the last newline within the limit
+                split_index = remaining_text.rfind("\n", 0, DISCORD_CHAR_LIMIT)
+                # If no newline, try to split at the last space
+                if split_index == -1:
+                    split_index = remaining_text.rfind(" ", 0, DISCORD_CHAR_LIMIT)
+                # If no space, hard split at the limit
+                if split_index == -1:
+                    split_index = DISCORD_CHAR_LIMIT
+
+                chunk = remaining_text[:split_index].strip()
+                remaining_text = remaining_text[split_index:].strip()
+
+            if not chunk:
+                continue
+
             target: discord.Message = msgs[-1] if msgs else trigger_msg
             new_msg: discord.Message = await target.reply(content=chunk, silent=True)
             msgs.append(new_msg)
 
-            # Initialize and lock the node so subsequent replies wait for this content
             node: MsgNode = MsgNode()
             self.msg_nodes[new_msg.id] = node
             await node.lock.acquire()
