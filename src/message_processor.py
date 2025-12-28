@@ -10,8 +10,8 @@ from typing import Any
 import discord
 
 from .config_manager import RootConfig
-from .models import MsgNode
-from .utils_discord import is_message_allowed
+from .custom_types import MsgNode
+from .discord_utils import is_message_allowed
 
 logger = logging.getLogger(__name__)
 DISCORD_CHAR_LIMIT: int = 2000

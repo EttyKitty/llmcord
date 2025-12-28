@@ -9,8 +9,8 @@ from typing import Any, NamedTuple
 
 from discord import Message
 
-from .models import MsgNode
-from .utils_regex import sanitize_symbols
+from .custom_types import MsgNode
+from .regex_utils import sanitize_symbols
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from discord.app_commands import Choice
 from discord.ext import commands
 
 from .config_manager import EDITABLE_SETTINGS, config_manager
-from .utils_discord import is_admin
+from .discord_utils import is_admin
 
 logger = logging.getLogger(__name__)
 
