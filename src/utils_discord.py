@@ -14,6 +14,7 @@ import discord
 import httpx
 
 from .config_manager import PermissionsConfig, config_manager
+from .custom_types import MessageCache, MessageList
 from .models import MsgNode
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ async def fetch_history(
     *,
     use_channel_context: bool,
     bot_user: discord.ClientUser,
-) -> list[discord.Message]:
+) -> MessageList:
     """Retrieve message history efficiently using a local cache to avoid rate limits.
 
     :param message: The trigger message.
@@ -110,7 +111,7 @@ async def fetch_history(
 async def _fetch_channel_history(
     message: discord.Message,
     max_messages: int,
-) -> list[discord.Message]:
+) -> MessageList:
     """Fetch message history using channel context mode.
 
     :param message: The trigger message.
@@ -126,7 +127,7 @@ async def _fetch_reply_chain_history(
     message: discord.Message,
     max_messages: int,
     bot_user: discord.ClientUser,
-) -> list[discord.Message]:
+) -> MessageList:
     """Fetch message history using reply chain mode.
 
     :param message: The trigger message.
@@ -135,9 +136,9 @@ async def _fetch_reply_chain_history(
     :return: A list of Discord messages.
     """
     # Fetch a batch of recent messages once to avoid individual API calls for every reply hop.
-    local_cache: dict[int, discord.Message] = {msg.id: msg async for msg in message.channel.history(limit=100, before=message)}
+    local_cache: MessageCache = {msg.id: msg async for msg in message.channel.history(limit=100, before=message)}
 
-    message_history: list[discord.Message] = []
+    message_history: MessageList = []
     history_ids: set[int] = set()
     current_msg: discord.Message | None = message
 
@@ -153,7 +154,7 @@ async def _fetch_reply_chain_history(
 
 async def _get_next_message_in_chain(
     current_msg: discord.Message,
-    local_cache: dict[int, discord.Message],
+    local_cache: MessageCache,
     bot_user: discord.ClientUser,
 ) -> discord.Message | None:
     """Get the next message in the reply chain.
@@ -198,7 +199,7 @@ def _is_thread_starter_message(message: discord.Message) -> bool:
 
 def _find_previous_message_by_author(
     current_msg: discord.Message,
-    local_cache: dict[int, discord.Message],
+    local_cache: MessageCache,
     bot_user: discord.ClientUser,
 ) -> discord.Message | None:
     """Find the most recent previous message by the same author.

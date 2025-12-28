@@ -66,7 +66,7 @@ Or local models with:
 - **Efficient Caching:** Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls.
 - **Fully Asynchronous**
 - ⭐**Zero-Hassle Launcher:** Included `starter.bat` automatically creates a virtual environment, installs/updates dependencies, and handles auto-restarts.
-- ⭐**Smart Context Management:** Uses `tiktoken` to enforce `max_input_tokens`, automatically dropping older messages to ensure you never hit API limits.
+- ⭐**Smart Context Management:** Uses `litellm` to enforce `max_input_tokens`, automatically dropping older messages to ensure you never hit API limits.
 - ⭐**Advanced Prompting:** Supports a `post_history_prompt` to inject instructions at the very end of the context, perfect for reinforcing formatting rules or jailbreaks.
 - ⭐**Clean Output:** Automatically strips `<think>` tags from reasoning models (like DeepSeek R1) and includes a `sanitize_response` option to convert smart typography to ASCII and collapse excessive whitespace.
 - ⭐**Multi-Modal Output Fix**: Mistral model `magistral` notably responds with a multi-modal list, that includes reasoning and text outputs. These responses are now properly accepted by llmcord, without errors.

@@ -1,8 +1,7 @@
-discord.py>=2.6.0
+discord.py
 httpx
 openai
 pyyaml
 types-PyYAML
-tiktoken
 ddgs
 litellm

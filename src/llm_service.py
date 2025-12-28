@@ -188,10 +188,18 @@ class LLMService:
         build_params: BuildMessagesParams,
     ) -> list[dict[str, Any]]:
         """Build and trim the messages payload."""
-        accept_images = litellm.supports_vision(build_params.model)
-        accept_usernames = any(build_params.provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+        payload_params = self._create_payload_params(build_params)
+        content_messages = self._build_content_messages(build_params, payload_params)
+        messages_payload = self._assemble_messages_payload(build_params, content_messages)
 
-        payload_params = MessagePayloadParams(
+        return self._trim_messages_if_needed(messages_payload, build_params)
+
+    def _create_payload_params(self, build_params: BuildMessagesParams) -> MessagePayloadParams:
+        """Create payload parameters based on model capabilities."""
+        accept_images = litellm.supports_vision(build_params.model)
+        accept_usernames = self._provider_supports_usernames(build_params.provider)
+
+        return MessagePayloadParams(
             max_text=self.config.chat.max_text,
             max_images=self.config.chat.max_images,
             prefix_users=self.config.chat.prefix_users,
@@ -199,21 +207,51 @@ class LLMService:
             accept_usernames=accept_usernames,
         )
 
-        content_messages = build_messages_payload(
+    def _provider_supports_usernames(self, provider: str) -> bool:
+        """Check if provider supports usernames in messages."""
+        return any(provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+
+    def _build_content_messages(
+        self,
+        build_params: BuildMessagesParams,
+        payload_params: MessagePayloadParams,
+    ) -> list[dict[str, Any]]:
+        """Build content messages from message history."""
+        return build_messages_payload(
             message_history=build_params.message_history,
             msg_nodes=build_params.msg_nodes,
             params=payload_params,
         )
 
+    def _assemble_messages_payload(
+        self,
+        build_params: BuildMessagesParams,
+        content_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Assemble the complete messages payload with system prompts."""
         messages_payload: list[dict[str, Any]] = []
-        if build_params.pre_history:
-            messages_payload.append({"role": "system", "content": build_params.pre_history})
 
+        self._add_system_prompt_if_exists(messages_payload, build_params.pre_history)
         messages_payload.extend(content_messages)
+        self._add_system_prompt_if_exists(messages_payload, build_params.post_history)
 
-        if build_params.post_history:
-            messages_payload.append({"role": "system", "content": build_params.post_history})
+        return messages_payload
 
+    def _add_system_prompt_if_exists(
+        self,
+        messages_payload: list[dict[str, Any]],
+        prompt_content: str | None,
+    ) -> None:
+        """Add system prompt to payload if content exists."""
+        if prompt_content:
+            messages_payload.append({"role": "system", "content": prompt_content})
+
+    def _trim_messages_if_needed(
+        self,
+        messages_payload: list[dict[str, Any]],
+        build_params: BuildMessagesParams,
+    ) -> list[dict[str, Any]]:
+        """Trim messages payload if it exceeds token limit."""
         full_model_name = f"{build_params.provider}/{build_params.model}"
         trimmed_result = litellm_utils.trim_messages(  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
             messages_payload,
