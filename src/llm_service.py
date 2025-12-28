@@ -196,7 +196,7 @@ class LLMService:
 
     def _create_payload_params(self, build_params: BuildMessagesParams) -> MessagePayloadParams:
         """Create payload parameters based on model capabilities."""
-        accept_images = litellm.supports_vision(build_params.model)
+        accept_images = litellm.supports_vision(build_params.model, custom_llm_provider=build_params.provider)
         accept_usernames = self._provider_supports_usernames(build_params.provider)
 
         return MessagePayloadParams(
