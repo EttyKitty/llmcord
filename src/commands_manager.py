@@ -11,7 +11,7 @@ from discord.app_commands import Choice
 from discord.ext import commands
 
 from .config_manager import EDITABLE_SETTINGS, config_manager
-from .utils import is_admin
+from .utils_discord import is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class ConfigurationCog(commands.Cog):
         await interaction.response.send_message(f"[Default model set to `{model}`.]")
 
     @config_model.autocomplete("model")
-    async def model_autocomplete(self, interaction: discord.Interaction, current: str) -> list[Choice[str]]:
+    async def model_autocomplete(self, _interaction: discord.Interaction, current: str) -> list[Choice[str]]:
         """Autocomplete for model selection."""
         default_model = config_manager.config.chat.default_model
         models = config_manager.config.llm.models
@@ -131,23 +131,8 @@ class ConfigurationCog(commands.Cog):
             )
             return
 
-        parsed_value: int | bool | float | str
-
         try:
-            if target_type is bool:
-                if value.lower() in ("true", "1", "yes", "on"):
-                    parsed_value = True
-                elif value.lower() in ("false", "0", "no", "off"):
-                    parsed_value = False
-                else:
-                    raise ValueError("Invalid boolean")
-            elif target_type is int:
-                parsed_value = int(value)
-            elif target_type is float:
-                parsed_value = float(value)
-            else:
-                parsed_value = value
-
+            parsed_value = self._parse_config_value(value, target_type)
         except ValueError:
             await interaction.response.send_message(
                 f"Invalid value for `{key}`. Expected type: `{target_type.__name__}`.",
@@ -161,6 +146,21 @@ class ConfigurationCog(commands.Cog):
         logger.info("Admin %s changed config %s to %s", interaction.user.name, key, parsed_value)
         await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
 
+    def _parse_config_value(self, value: str, target_type: type) -> int | bool | float | str:
+        """Parse a string value into the target type."""
+        if target_type is bool:
+            if value.lower() in ("true", "1", "yes", "on"):
+                return True
+            if value.lower() in ("false", "0", "no", "off"):
+                return False
+            msg = "Invalid boolean"
+            raise ValueError(msg)
+        if target_type is int:
+            return int(value)
+        if target_type is float:
+            return float(value)
+        return value
+
     async def _check_admin(self, interaction: discord.Interaction) -> bool:
         """Verify admin permissions and send denial message if unauthorized.
 
@@ -173,6 +173,6 @@ class ConfigurationCog(commands.Cog):
         return True
 
 
-async def setup(bot: commands.Bot) -> None:
+async def setup_commands(bot: commands.Bot) -> None:
     """Load the ConfigurationCog."""
     await bot.add_cog(ConfigurationCog(bot))

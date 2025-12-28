@@ -5,9 +5,11 @@ This module defines the tools available to the LLM and the logic to execute them
 
 import logging
 import warnings
-from typing import Any
+from typing import Any, cast
 
-from ddgs import DDGS
+from ddgs import (
+    DDGS,  # type: ignore[import-untyped] # DDGS library has incomplete type stubs, remove when fixed upstream
+)
 
 # Suppress the duckduckgo_search rename warning
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
@@ -59,13 +61,14 @@ class ToolManager:
             return "Error: No query provided."
 
         logger.info("Performing web search for: %s", query)
-        results = []
+        results: list[str] = []
         try:
             # The latest DDGS version works best as a context manager
             with DDGS() as ddgs:
                 ddgs_gen = ddgs.text(query, max_results=5)
                 for r in ddgs_gen:
-                    results.extend(f"Title: {r['title']}\nSnippet: {r['body']}\nURL: {r['href']}\n")
+                    r_dict = cast("dict[str, str]", r)
+                    results.append(f"Title: {r_dict['title']}\nSnippet: {r_dict['body']}\nURL: {r_dict['href']}\n")
         except Exception as e:
             logger.exception("DuckDuckGo search failed!")
             return f"Search failed: {e}"
