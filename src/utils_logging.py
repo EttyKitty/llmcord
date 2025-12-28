@@ -6,7 +6,7 @@ import logging
 import os
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import ClassVar, cast
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class RequestLogger:
             extra_headers = log_entry.get("extra_headers")
 
             if isinstance(extra_headers, dict):
-                headers_copy: dict[str, object] = dict(extra_headers)
+                headers_copy: dict[str, object] = dict(cast("dict[str, object]", extra_headers))
 
                 for key in list(headers_copy.keys()):
                     if any(sensitive in key.lower() for sensitive in ("api", "auth", "key", "token")):

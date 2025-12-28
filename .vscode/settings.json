@@ -8,8 +8,17 @@
             "source.fixAll": "explicit",
             "source.organizeImports": "explicit"
         },
-    "ruff.lint.select": [
-        "ALL"
-    ]
-    }
+    },
+    "ruff.lineLength": 320,
+    "files.exclude": {
+        "**/venv": true,
+        "**/.venv": true,
+        "**/__pycache__": true
+    },
+    "search.exclude": {
+        "**/venv": true,
+        "**/.venv": true,
+        "**/__pycache__": true
+    },
+    "python.analysis.typeCheckingMode": "strict"
 }

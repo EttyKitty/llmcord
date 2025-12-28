@@ -4,7 +4,7 @@ import logging
 import sys
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
-from typing import TypeVar, get_type_hints
+from typing import Any, TypeAlias, TypeVar, cast, get_type_hints
 
 import yaml
 import yaml.representer
@@ -24,7 +24,7 @@ CONFIG_FILE = CONFIG_DIR / "config.default.yaml"
 USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
 logger = logging.getLogger(__name__)
-ConfigValue = str | int | bool | float | list | dict | None
+ConfigValue: TypeAlias = str | int | bool | float | list[Any] | dict[str, Any] | None
 T = TypeVar("T")
 
 
@@ -37,8 +37,8 @@ def _str_presenter(dumper: yaml.representer.SafeRepresenter, data: str) -> yaml.
         block = "\n".join([line.rstrip() for line in data.splitlines()])
         if data.endswith("\n"):
             block += "\n"
-        return dumper.represent_scalar("tag:yaml.org,2002:str", block, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+        return dumper.represent_scalar("tag:yaml.org,2002:str", block, style="|")  # type: ignore[no-untyped-call] # PyYAML has incomplete type stubs, remove when fixed upstream
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)  # type: ignore[no-untyped-call] # PyYAML has incomplete type stubs, remove when fixed upstream
 
 
 yaml.add_representer(str, _str_presenter)
@@ -50,7 +50,7 @@ class ChatConfig:
     """Configuration settings specific to chat functionality."""
 
     default_model: str = ""
-    channel_models: dict[int, str] = field(default_factory=dict)
+    channel_models: dict[int, str] = field(default_factory=dict)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
     sanitize_response: bool = False
     force_reply_chains: bool = False
     prefix_users: bool = False
@@ -65,17 +65,17 @@ class ChatConfig:
 class LLMConfig:
     """Configuration settings for LLM providers and models."""
 
-    providers: dict[str, ConfigValue] = field(default_factory=dict)
-    models: dict[str, ConfigValue] = field(default_factory=dict)
+    providers: dict[str, ConfigValue] = field(default_factory=dict)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
+    models: dict[str, ConfigValue] = field(default_factory=dict)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
 
 
 @dataclass
 class PermissionGroup:
     """Data structure for defining permission lists."""
 
-    admin_ids: list[int] = field(default_factory=list)
-    allowed_ids: list[int] = field(default_factory=list)
-    blocked_ids: list[int] = field(default_factory=list)
+    admin_ids: list[int] = field(default_factory=list)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
+    allowed_ids: list[int] = field(default_factory=list)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
+    blocked_ids: list[int] = field(default_factory=list)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
 
 
 @dataclass
@@ -124,7 +124,7 @@ class ConfigManager:
         self.config: RootConfig = RootConfig()
         self.load_config()
 
-    def deep_merge(self, base: dict, overrides: dict, replace_keys: set[str] | None = None) -> dict:
+    def deep_merge(self, base: dict[str, Any], overrides: dict[str, Any], replace_keys: set[str] | None = None) -> dict[str, Any]:
         """Merge dictionaries recursively.
 
         :param base: The base dictionary to merge into.
@@ -137,16 +137,16 @@ class ConfigManager:
             if key in replace_keys or not (isinstance(value, dict) and key in base and isinstance(base[key], dict)):
                 base[key] = value
             else:
-                self.deep_merge(base[key], value, replace_keys)
+                self.deep_merge(base[key], value, replace_keys)  # type: ignore[arg-type] # recursive dict merging with complex types, type checker limitation
         return base
 
     def load_config(self) -> None:
         """Load configuration from disk, apply overrides, and map to dataclasses."""
         # 1. Load Defaults
-        raw_config: dict = {}
+        raw_config: dict[str, Any] = {}
         try:
             with CONFIG_FILE.open(encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+                raw_config = cast("dict[str, Any]", yaml.safe_load(f) or {})
         except FileNotFoundError:
             logger.exception("config.default.yaml not found! Exiting...")
             sys.exit(1)
@@ -158,7 +158,7 @@ class ConfigManager:
         if USER_CONFIG_FILE.exists():
             try:
                 with USER_CONFIG_FILE.open(encoding="utf-8") as f:
-                    user_overrides = yaml.safe_load(f) or {}
+                    user_overrides = cast("dict[str, Any]", yaml.safe_load(f) or {})
                 self.deep_merge(raw_config, user_overrides, replace_keys={"models"})
             except (OSError, yaml.YAMLError):
                 logger.exception("Error loading config.yaml!")
@@ -188,10 +188,12 @@ class ConfigManager:
             error = f"Expected dict for {cls.__name__}, got {type(data)}"
             raise TypeError(error)
 
+        data_dict = cast("dict[str, Any]", data)
+
         field_types = get_type_hints(cls)
 
         kwargs = {}
-        for key, value in data.items():
+        for key, value in data_dict.items():
             if key in field_types:
                 field_type = field_types[key]
                 if isinstance(field_type, type) and is_dataclass(field_type):
@@ -200,17 +202,17 @@ class ConfigManager:
                     kwargs[key] = value
         return cls(**kwargs)
 
-    def update_user_config(self, updates: dict) -> None:
+    def update_user_config(self, updates: dict[str, Any]) -> None:
         """Read config.yaml, apply deep merge with updates, save to disk, and reload.
 
         :param updates: Dictionary of configuration updates to merge.
         :return: None
         """
-        current_user_config: dict = {}
+        current_user_config: dict[str, Any] = {}
         if USER_CONFIG_FILE.exists():
             try:
                 with USER_CONFIG_FILE.open(encoding="utf-8") as f:
-                    current_user_config = yaml.safe_load(f) or {}
+                    current_user_config = cast("dict[str, Any]", yaml.safe_load(f) or {})
             except (OSError, yaml.YAMLError):
                 logger.exception("Failed to read config.yaml!")
 
@@ -233,7 +235,7 @@ class ConfigManager:
         """
         keys = path.split(".")
 
-        update_payload: dict | ConfigValue = value
+        update_payload: dict[str, Any] | ConfigValue = value
         for key in reversed(keys):
             update_payload = {key: update_payload}
 

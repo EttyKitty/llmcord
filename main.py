@@ -15,6 +15,7 @@ logger = logging.getLogger("runner")
 MAX_RETRIES = 2  # How many automatic restarts allowed
 STABLE_THRESHOLD = 120  # Seconds the bot must run to be considered "stable"
 RESTART_DELAY = 15
+EXIT_CODE_RELOAD = 2  # Exit code for manual reload
 
 if __name__ == "__main__":
     retry_count = 0
@@ -30,7 +31,7 @@ if __name__ == "__main__":
                 logger.info("Bot stopped gracefully.")
                 break
 
-            if exit_code == 2:
+            if exit_code == EXIT_CODE_RELOAD:
                 logger.info("Bot reloading...")
                 retry_count = 0  # Reset retries for manual reloads
             else:
