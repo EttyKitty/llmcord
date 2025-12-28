@@ -13,8 +13,7 @@ import discord
 import httpx
 
 from .config_manager import PermissionsConfig, config_manager
-from .custom_types import MessageCache, MessageList
-from .models import MsgNode
+from .custom_types import MessageCache, MessageList, MsgNode
 
 logger = logging.getLogger(__name__)
 
