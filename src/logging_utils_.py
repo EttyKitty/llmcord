@@ -125,6 +125,7 @@ def setup_logging() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 # Initialize immediately on import
