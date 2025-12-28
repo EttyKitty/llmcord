@@ -8,7 +8,6 @@ import asyncio
 import logging
 import time
 from base64 import b64encode
-from typing import cast
 
 import discord
 import httpx
@@ -54,7 +53,8 @@ def is_message_allowed(msg: discord.Message, permissions: PermissionsConfig, *, 
     # 3. Channel Validation
     # Collect current channel ID, parent ID (for threads), and category ID
     channel_ids: set[int] = set()
-    for cid in cast("list[int | None]", [msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None)]):
+    channel_ids_list: list[int | None] = [msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None)]
+    for cid in channel_ids_list:
         if cid is not None:
             channel_ids.add(cid)
 
