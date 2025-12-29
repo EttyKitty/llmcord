@@ -31,19 +31,21 @@ class MessageProcessor:
         self.bot_user = bot_user
         self.msg_nodes: dict[int, Any] = {}
 
-    def should_process_message(self, message: discord.Message) -> bool:
+    def valid_trigger_message(self, message: discord.Message) -> bool:
         """Determine if a message should be processed.
 
         :param message: The Discord message to check.
         :return: True if the message should be processed.
         """
         if message.author.bot:
+            logger.debug("Skipping message because author is a bot. author=%s", getattr(message.author, "name", None))
             return False
 
         is_dm = message.channel.type == discord.ChannelType.private
         is_mentioned = self.bot_user in message.mentions
 
         if not (is_dm or is_mentioned):
+            logger.debug("Skipping message: not DM and not mentioned. is_dm=%s is_mentioned=%s", is_dm, is_mentioned)
             return False
 
         if not is_message_allowed(message, self.config.discord.permissions, allow_dms=self.config.discord.allow_dms):
