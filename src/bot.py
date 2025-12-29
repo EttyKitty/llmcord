@@ -122,7 +122,7 @@ class LLMCordBot(commands.Bot):
         # At this point, services are guaranteed to be initialized, so safe_user should be available
         user = self.safe_user  # This will raise if user is None (shouldn't happen)
 
-        if not self.message_processor.should_process_message(message):
+        if not self.message_processor.valid_trigger_message(message):
             return
 
         logger.info("Message recieved. User: %s ID: %d", message.author.name, message.author.id)
