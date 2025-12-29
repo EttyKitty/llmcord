@@ -15,23 +15,21 @@ from typing import Any, Final
 import aiohttp
 import discord
 import httpx
-import litellm
 from discord.ext import commands
 
 from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
 from .llm_service import LLMService
 from .message_processor import MessageProcessor
+from .regex_utils import process_response_text
 
 MAX_MESSAGE_NODES: Final[int] = 500
 DISCORD_CHAR_LIMIT: Final[int] = 2000
+DISCORD_REST_SUCCESS: Final[int] = 200
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 
 logger = logging.getLogger(__name__)
-
-litellm.telemetry = False
-litellm.modify_params = True
 
 
 class LLMCordBot(commands.Bot):
@@ -93,22 +91,34 @@ class LLMCordBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Set up internal discord.py hook for asynchronous setup."""
         start_time = time.perf_counter()
+        logger.debug("Setting up commands...")
         await setup_commands(self)
         logger.debug("Commands setup finished in %.2f seconds", time.perf_counter() - start_time)
 
         sync_start = time.perf_counter()
+        logger.debug("Syncing command tree...")
         await self.tree.sync()
-        logger.debug("Command tree synced in %.2f seconds", time.perf_counter() - sync_start)
+        logger.debug("Command tree synced in %.2f seconds!", time.perf_counter() - sync_start)
 
         # Initialize services now that bot user is available
         user = self.safe_user  # This will raise if user is None
+        logger.debug("Initializing services...")
         self.llm_service = LLMService(self.config, self.httpx_client)
         self.message_processor = MessageProcessor(self.config, user)
+        logger.debug("Services initialized!")
 
-        if client_id := self.config.discord.client_id:
-            logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
+        # Verify we can reach Discord's REST API and that the token/user are valid.
+        try:
+            verified = await self._verify_discord_rest()
+            if not verified:
+                logger.warning("Discord REST verification failed — bot may not be fully ready to receive messages")
+            else:
+                logger.info("Bot ready. Logged in as %s. Total hook setup time: %.2f seconds", self.safe_user, time.perf_counter() - start_time)
 
-        logger.info("Bot ready. Logged in as %s. Total hook setup time: %.2f seconds", self.safe_user, time.perf_counter() - start_time)
+                if client_id := self.config.discord.client_id:
+                    logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
+        except Exception:
+            logger.exception("Error during Discord readiness verification")
 
     async def on_message(self, message: discord.Message) -> None:
         """Event handler for new messages. Orchestrates the response flow.
@@ -140,6 +150,46 @@ class LLMCordBot(commands.Bot):
         finally:
             self.message_processor.prune_msg_nodes()
 
+    async def _verify_discord_rest(self, retries: int = 3, backoff: float = 1.5, timeout: float = 5.0) -> bool:
+        """REST check to ensure Discord API and bot token are reachable.
+
+        Performs a GET on `/users/@me` using the configured bot token and
+        validates the returned user id matches the logged-in user. Retries on
+        transient failures.
+
+        :return: True if verification succeeded, False otherwise.
+        """
+        token = self.config.discord.bot_token
+        if not token:
+            logger.warning("No bot token configured for readiness verification")
+            return False
+
+        url = "https://discord.com/api/v10/users/@me"
+        headers = {"Authorization": f"Bot {token}"}
+
+        for attempt in range(1, retries + 1):
+            try:
+                resp = await self.httpx_client.get(url, headers=headers, timeout=timeout)
+                if resp.status_code == DISCORD_REST_SUCCESS:
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = None
+                    if data and str(data.get("id")) == str(self.safe_user.id):
+                        logger.debug("Discord REST verified")
+                        return True
+                    logger.warning("Discord REST returned unexpected data or id mismatch: %s", data)
+                    return False
+                logger.warning("Discord REST returned status %s on attempt %d", resp.status_code, attempt)
+            except Exception:
+                logger.exception("Discord readiness check attempt %d failed", attempt)
+
+            if attempt < retries:
+                await asyncio.sleep(backoff * attempt)
+
+        logger.error("Discord REST verification failed after %d attempts", retries)
+        return False
+
     async def _generate_response(self, message: discord.Message, chat_params: dict[str, Any]) -> None:
         """Generate and send the LLM response.
 
@@ -156,7 +206,8 @@ class LLMCordBot(commands.Bot):
         logger.info("Response generated in %.4f seconds", time.perf_counter() - start_time)
 
         if response_text:
-            await self.message_processor.send_response_chunks(message, response_text)
+            sanitized_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response)
+            await self.message_processor.send_response_chunks(message, sanitized_text)
 
 
 async def main() -> int:
@@ -164,14 +215,16 @@ async def main() -> int:
 
     :return: The exit code (0 for stop, 1 for error, 2 for reload).
     """
+    logger.debug("Initializing bot.py...")
+    start_time = time.perf_counter()
     intents = discord.Intents.default()
     intents.message_content = True
     activity = discord.CustomActivity(name=(config_manager.config.discord.status_message)[:128])
 
     bot = LLMCordBot(intents=intents, activity=activity)
-    start_time = time.perf_counter()
+
     threading.Thread(target=console_listener, args=(bot,), daemon=True).start()
-    logger.debug("Thread started in %.2f seconds", time.perf_counter() - start_time)
+    logger.debug("Bot.py initialization finished in %.2f seconds!", time.perf_counter() - start_time)
 
     retry_delay = 5
     max_delay = 60
@@ -180,8 +233,8 @@ async def main() -> int:
         try:
             async with bot:
                 start_time = time.perf_counter()
+                logger.debug("About to start bot...")
                 await bot.start(config_manager.config.discord.bot_token)
-                logger.debug("Bot started in %.2f seconds", time.perf_counter() - start_time)
             break
         except discord.LoginFailure:
             logger.exception("Invalid Discord token.")
