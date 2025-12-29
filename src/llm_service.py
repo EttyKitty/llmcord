@@ -7,6 +7,7 @@ provider resolution, message preparation, and API calls.
 import asyncio
 import json
 import logging
+import os
 from typing import Any, NamedTuple, cast
 
 import discord
@@ -23,9 +24,12 @@ from .message_utils import MessagePayloadParams, build_messages_payload
 from .regex_utils import replace_placeholders
 from .tools import tool_manager
 
-logger = logging.getLogger(__name__)
-
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
+
+logger = logging.getLogger(__name__)
+os.environ["LITELLM_LOG"] = "ERROR"
+litellm.telemetry = False
+litellm.modify_params = True
 
 
 class BuildMessagesParams(NamedTuple):
