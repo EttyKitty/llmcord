@@ -4,15 +4,16 @@
 
 !.gitignore
 !.gitattributes
-
-!*.md
-!*.py
-
 !Dockerfile
 !config.default.yaml
 !docker-compose.yaml
 !requirements.txt
 !starter.bat
+
+!*.md
+!*.py
+!*.json
+
 !src
 !docs
 !config

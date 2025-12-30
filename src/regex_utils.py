@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 import discord
 
+from .time_utils import time_performance
+
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
 REGEX_TRAILING_WHITESPACE = re.compile(r"[ \t]+(?=\r?\n|$)")
@@ -46,7 +48,8 @@ def clean_response(text: str) -> str:
     return text.strip()
 
 
-def process_response_text(text: str, *, sanitize: bool) -> str:
+@time_performance("Response cleaning")
+def process_response_text(text: str, *, sanitize: bool, bot_name: str) -> str:
     """Sanitize and process the final response text.
 
     :param text: The raw response text.
@@ -63,7 +66,7 @@ def process_response_text(text: str, *, sanitize: bool) -> str:
         logger.debug("Removing <think> block...")
         final_text = REGEX_THINK_BLOCK.sub("", final_text).strip()
 
-    return final_text
+    return remove_prefixes(final_text, bot_name)
 
 
 def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.ClientUser, model: str, provider: str) -> str:
@@ -113,3 +116,29 @@ def sanitize_symbols(username: str) -> str:
     :return: The sanitized username containing only [a-zA-Z0-9_-].
     """
     return REGEX_USER_NAME_SANITIZER.sub("", username)
+
+
+def remove_prefixes(text: str, bot_name: str) -> str:
+    """Remove prefixes from the start of the LLM response."""
+    # 1. Remove leading/trailing whitespace
+    text = text.strip()
+
+    name_esc = re.escape(bot_name)
+
+    patterns = [
+        # 1. Full header: [Timestamp] Name(ID):
+        rf"^\[.*?\]\s*{name_esc}(?:\(\d+\))?[\s:]+",
+        # 2. Name + ID only: Name(ID):
+        rf"^{name_esc}(?:\(\d+\))?[\s:]+",
+        # 3. Matches: BotName:
+        rf"^{name_esc}[\s:]+",
+        # 4. Matches: [2024-05-20 14:00]:
+        r"^\[.*?\][\s:]+",
+        # 5. Matches generic: "Assistant: " or "AI: "
+        r"^(Assistant|AI|System)[\s:]+",
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    return text

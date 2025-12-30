@@ -4,10 +4,11 @@ This module defines the tools available to the LLM and the logic to execute them
 """
 
 import ipaddress
+import json
 import logging
 import socket
 import urllib.parse
-import warnings
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -16,14 +17,10 @@ from ddgs import (
     DDGS,  # type: ignore[import-untyped] # DDGS library has incomplete type stubs, remove when fixed upstream
 )
 
-# Suppress the duckduckgo_search rename warning
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
-
+MAX_CONTENT_SIZE = 500000  # 50KB limit for fetched content
+TOOLS_PATH = Path(__file__).parent / "llm_tools.json"
 
 logger = logging.getLogger(__name__)
-
-
-MAX_CONTENT_SIZE = 500000  # 50KB limit for fetched content
 
 
 class ToolManager:
@@ -32,42 +29,8 @@ class ToolManager:
     @staticmethod
     def get_tool_definitions() -> list[dict[str, Any]]:
         """Return the JSON schemas for available tools."""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "description": "Search the web for current events, facts, or general information.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query to look up.",
-                            },
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "open_link",
-                    "description": "Fetch the content of a web page from a given URL.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "The URL to fetch content from. Must be a valid HTTP or HTTPS URL.",
-                            },
-                        },
-                        "required": ["url"],
-                    },
-                },
-            },
-        ]
+        with (TOOLS_PATH).open() as f:
+            return json.load(f)
 
     async def execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Map a tool name to its Python implementation and execute it."""

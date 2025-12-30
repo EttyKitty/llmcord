@@ -8,6 +8,22 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import ClassVar, cast
 
+from .time_utils import time_performance
+
+NOISY_LOGGERS = [
+    "primp",
+    "rquest",
+    "cookie_store",
+    "discord",
+    "httpx",
+    "httpcore",
+    "openai",
+    "asyncio",
+    "LiteLLM Router",
+    "LiteLLM",
+    "LiteLLM Proxy",
+]
+
 logger = logging.getLogger(__name__)
 
 # --- Fix for Windows Colors ---
@@ -47,6 +63,7 @@ class RequestLogger:
         handler.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(handler)
 
+    @time_performance("Payload Logging")
     def log(self, payload: Mapping[str, object]) -> None:
         """Sanitize and log the request payload as a pretty-printed JSON object.
 
@@ -74,9 +91,8 @@ class RequestLogger:
 
             log_message = json.dumps(log_entry, default=str, ensure_ascii=False, indent=4)
             self.logger.info(log_message)
-            logger.debug("Logged the request!")
         except (OSError, TypeError, ValueError):
-            logger.exception("Failed to log LLM request!")
+            logger.exception("Failed to log the payload!")
 
 
 class ColoredFormatter(logging.Formatter):
@@ -119,15 +135,8 @@ def setup_logging() -> None:
 
     logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
 
-    # Silence noisy libraries
-    logging.getLogger("discord").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
-    logging.getLogger("asyncio").setLevel(logging.WARNING)
-    logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
-    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-    logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
+    for logger_name in NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 # Initialize immediately on import
 setup_logging()

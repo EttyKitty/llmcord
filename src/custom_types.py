@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 import discord
 
@@ -42,19 +42,8 @@ MessageContent = str | list[dict[str, Any]]
 MessagePartList = list[dict[str, Any]]
 
 
-class DiscordMessageInfo(TypedDict):
-    """Typed dictionary for Discord message information."""
-
-    text: str | None
-    images: ImageList
-    role: str
-    user_id: int | None
-    user_display_name: str | None
-    has_bad_attachments: bool
-
-
 @dataclass
-class MsgNode:
+class MessageNode:
     """Represents a single message node in the conversation history.
 
     :param text: The text content of the message.
@@ -66,6 +55,8 @@ class MsgNode:
     :param lock: An async lock to manage concurrent access to this node.
     """
 
+    created_at: discord.datetime | None = None
+
     text: str | None = None
     images: list[dict[str, Any]] = field(default_factory=list)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
 
@@ -76,3 +67,29 @@ class MsgNode:
     has_bad_attachments: bool = False
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+MessageNodes = dict[int, MessageNode]
+
+
+@dataclass(frozen=True, slots=True)
+class MessagePayloadParams:
+    """Parameters for message payload creation."""
+
+    max_text: int
+    max_images: int
+    prefix_users: bool
+    accept_images: bool
+    accept_usernames: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BuildMessagesParams:
+    """Parameters for building messages payload."""
+
+    message_history: list[discord.Message]
+    message_nodes: dict[int, MessageNode]
+    pre_history: str | None
+    post_history: str | None
+    model: str
+    provider: str
