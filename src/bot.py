@@ -10,7 +10,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any, Final
+from typing import Final
 
 import aiohttp
 import discord
@@ -19,15 +19,16 @@ from discord.ext import commands
 
 from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
+from .discord_service import DiscordService
 from .llm_service import LLMService
-from .message_processor import MessageProcessor
+from .message_service import MessageService
 from .regex_utils import process_response_text
+from .time_utils import timer
 
 MAX_MESSAGE_NODES: Final[int] = 500
 DISCORD_CHAR_LIMIT: Final[int] = 2000
 DISCORD_REST_SUCCESS: Final[int] = 200
-PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-
+DISCORD_REST_INTERVAL: Final[int] = 60
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class LLMCordBot(commands.Bot):
     context building, and interaction with LLM providers via OpenAI-compatible APIs.
 
     :ivar llm_service: Service for LLM operations.
-    :ivar message_processor: Service for message processing.
+    :ivar message_service: Service for message processing.
     :ivar httpx_client: Shared HTTP client for external requests.
     :ivar exit_code: Exit code.
     """
@@ -81,7 +82,8 @@ class LLMCordBot(commands.Bot):
 
         # Initialize services after bot is ready
         self.llm_service: LLMService | None = None
-        self.message_processor: MessageProcessor | None = None
+        self.message_service: MessageService | None = None
+        self.discord_service: DiscordService | None = None
 
     async def close(self) -> None:
         """Cleanup resources before shutting down."""
@@ -101,56 +103,56 @@ class LLMCordBot(commands.Bot):
         logger.debug("Command tree synced in %.2f seconds!", time.perf_counter() - sync_start)
 
         # Initialize services now that bot user is available
-        user = self.safe_user  # This will raise if user is None
         logger.debug("Initializing services...")
-        self.llm_service = LLMService(self.config, self.httpx_client)
-        self.message_processor = MessageProcessor(self.config, user)
+        self.llm_service = LLMService(self.httpx_client)
+        self.message_service = MessageService(config=self.config, user=self.safe_user, httpx_client=self.httpx_client)
+        self.discord_service = DiscordService(config=self.config, message_nodes=self.message_service.message_nodes)
         logger.debug("Services initialized!")
 
         # Verify we can reach Discord's REST API and that the token/user are valid.
-        try:
-            verified = await self._verify_discord_rest()
-            if not verified:
-                logger.warning("Discord REST verification failed — bot may not be fully ready to receive messages")
-            else:
-                logger.info("Bot ready. Logged in as %s. Total hook setup time: %.2f seconds", self.safe_user, time.perf_counter() - start_time)
+        verified = await self._verify_discord_rest()
+        if not verified:
+            logger.warning("Discord REST verification failed")
+            self.exit_code = 0
+        else:
+            logger.info("Bot ready. Logged in as %s. Total hook setup time: %.2f seconds", self.safe_user, time.perf_counter() - start_time)
 
-                if client_id := self.config.discord.client_id:
-                    logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
-        except Exception:
-            logger.exception("Error during Discord readiness verification")
+            if client_id := self.config.discord.client_id:
+                logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
+
+        # Start periodic verification task
+        self.loop.create_task(self._periodic_verification(DISCORD_REST_INTERVAL))
 
     async def on_message(self, message: discord.Message) -> None:
         """Event handler for new messages. Orchestrates the response flow.
 
         :param message: The incoming Discord message to process.
         """
-        if not self.message_processor or not self.llm_service:
+        if not self.message_service or not self.llm_service or not self.discord_service:
             logger.warning("Services not initialized yet")
             return
 
-        # At this point, services are guaranteed to be initialized, so safe_user should be available
-        user = self.safe_user  # This will raise if user is None (shouldn't happen)
-
-        if not self.message_processor.valid_trigger_message(message):
+        if not self._valid_trigger_message(message):
             return
 
         logger.info("Message recieved. User: %s ID: %d", message.author.name, message.author.id)
 
         try:
-            # 1. Prepare the request payload
-            start_time = time.perf_counter()
-            chat_params = await self.llm_service.prepare_request(message, self.message_processor.msg_nodes, user)
-            logger.info("Request prepared in %.4f seconds", time.perf_counter() - start_time)
+            with timer("LLM payload preparation"):
+                llm_payload = await self.message_service.construct_llm_payload(message, self.safe_user)
 
-            # 2. Generate and send response
-            await self._generate_response(message, chat_params)
-        except Exception:
+            with timer("LLM request"):
+                response_text = await self.llm_service.perform_completion(llm_payload)
+
+            with timer("Discord response"):
+                response_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response, bot_name=self.safe_user.display_name)
+                await self.discord_service.send_response_chunks(message, response_text)
+        except (httpx.RequestError, discord.DiscordException):
             logger.exception("Failed to process message from %s", message.author.name)
         finally:
-            self.message_processor.prune_msg_nodes()
+            self.message_service.prune_msg_nodes()
 
-    async def _verify_discord_rest(self, retries: int = 3, backoff: float = 1.5, timeout: float = 5.0) -> bool:
+    async def _verify_discord_rest(self, retries: int = 3, backoff: float = 4, timeout: float = 10.0) -> bool:
         """REST check to ensure Discord API and bot token are reachable.
 
         Performs a GET on `/users/@me` using the configured bot token and
@@ -176,38 +178,99 @@ class LLMCordBot(commands.Bot):
                     except ValueError:
                         data = None
                     if data and str(data.get("id")) == str(self.safe_user.id):
-                        logger.debug("Discord REST verified")
                         return True
                     logger.warning("Discord REST returned unexpected data or id mismatch: %s", data)
                     return False
                 logger.warning("Discord REST returned status %s on attempt %d", resp.status_code, attempt)
-            except Exception:
-                logger.exception("Discord readiness check attempt %d failed", attempt)
+            except httpx.RequestError:
+                logger.warning("Discord readiness check attempt %d failed", attempt)
 
             if attempt < retries:
                 await asyncio.sleep(backoff * attempt)
 
-        logger.error("Discord REST verification failed after %d attempts", retries)
+        logger.warning("Discord REST verification failed after %d attempts", retries)
         return False
 
-    async def _generate_response(self, message: discord.Message, chat_params: dict[str, Any]) -> None:
-        """Generate and send the LLM response.
+    async def _periodic_verification(self, interval: int) -> None:
+        """Periodically verify Discord REST API connection."""
+        while True:
+            verified = await self._verify_discord_rest()
+            if not verified:
+                logger.warning("Periodic Discord REST verification failed")
+            await asyncio.sleep(interval)
 
-        :param message: The triggering Discord message.
-        :param chat_params: The parameters for the LLM call.
+    def _is_message_allowed(self, message: discord.Message) -> bool:
+        """Check if the message author and channel are allowed based on configuration.
+
+        :param message: The Discord message to check.
+        :param permissions: The permissions configuration object.
+        :param allow_dms: Whether the bot is allowed to respond in Direct Messages.
+        :return: True if allowed, False otherwise.
         """
-        # Services should be initialized at this point (checked in on_message)
-        if not self.llm_service or not self.message_processor:
-            logger.error("Services not available in _generate_response - this should not happen")
-            return
+        is_dm = message.channel.type == discord.ChannelType.private
 
-        start_time = time.perf_counter()
-        response_text = await self.llm_service.generate_response(chat_params)
-        logger.info("Response generated in %.4f seconds", time.perf_counter() - start_time)
+        config = self.config.discord
 
-        if response_text:
-            sanitized_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response)
-            await self.message_processor.send_response_chunks(message, sanitized_text)
+        # 1. Admin Bypass
+        if message.author.id in config.permissions.users.admin_ids:
+            return True
+
+        # 2. User/Role Validation
+        role_ids = {role.id for role in getattr(message.author, "roles", ())}
+        allowed_users = config.permissions.users.allowed_ids
+        blocked_users = config.permissions.users.blocked_ids
+        allowed_roles = config.permissions.roles.allowed_ids
+        blocked_roles = config.permissions.roles.blocked_ids
+
+        # Determine if the user is "good" (allowed by default or explicitly)
+        allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
+        is_good_user = allow_all_users or message.author.id in allowed_users or not role_ids.isdisjoint(allowed_roles)
+
+        # Determine if the user is "bad" (not good or explicitly blocked)
+        is_bad_user = not is_good_user or message.author.id in blocked_users or not role_ids.isdisjoint(blocked_roles)
+
+        if is_bad_user:
+            return False
+
+        # 3. Channel Validation
+        # Collect current channel ID, parent ID (for threads), and category ID
+        channel_ids: set[int] = set()
+        channel_ids_list: list[int | None] = [message.channel.id, getattr(message.channel, "parent_id", None), getattr(message.channel, "category_id", None)]
+        for cid in channel_ids_list:
+            if cid is not None:
+                channel_ids.add(cid)
+
+        allowed_channels = config.permissions.channels.allowed_ids
+        blocked_channels = config.permissions.channels.blocked_ids
+
+        # Determine if the channel is "good"
+        is_good_channel = config.allow_dms if is_dm else (not allowed_channels or not channel_ids.isdisjoint(allowed_channels))
+
+        # Determine if the channel is "bad"
+        is_bad_channel = not is_good_channel or not channel_ids.isdisjoint(blocked_channels)
+
+        return not is_bad_channel
+
+    def _valid_trigger_message(self, message: discord.Message) -> bool:
+        """Determine if a message should be processed.
+
+        :param message: The Discord message to check.
+        :return: True if the message should be processed.
+        """
+        if message.author.bot:
+            return False
+
+        is_dm = message.channel.type == discord.ChannelType.private
+        is_mentioned = self.safe_user in message.mentions
+
+        if not (is_dm or is_mentioned):
+            return False
+
+        if not self._is_message_allowed(message):
+            logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
+            return False
+
+        return True
 
 
 async def main() -> int:

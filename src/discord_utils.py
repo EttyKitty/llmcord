@@ -7,66 +7,15 @@ chains and provides utility functions for sanitizing text input/output.
 import asyncio
 import logging
 import time
-from base64 import b64encode
 
 import discord
-import httpx
 
-from .config_manager import PermissionsConfig, config_manager
-from .custom_types import MessageCache, MessageList, MsgNode
+from .config_manager import config_manager
+from .custom_types import MessageCache, MessageList
 
 logger = logging.getLogger(__name__)
 
-
-def is_message_allowed(msg: discord.Message, permissions: PermissionsConfig, *, allow_dms: bool) -> bool:
-    """Check if the message author and channel are allowed based on configuration.
-
-    :param msg: The Discord message to check.
-    :param permissions: The permissions configuration object.
-    :param allow_dms: Whether the bot is allowed to respond in Direct Messages.
-    :return: True if allowed, False otherwise.
-    """
-    is_dm = msg.channel.type == discord.ChannelType.private
-
-    # 1. Admin Bypass
-    if msg.author.id in permissions.users.admin_ids:
-        return True
-
-    # 2. User/Role Validation
-    role_ids = {role.id for role in getattr(msg.author, "roles", ())}
-    allowed_users = permissions.users.allowed_ids
-    blocked_users = permissions.users.blocked_ids
-    allowed_roles = permissions.roles.allowed_ids
-    blocked_roles = permissions.roles.blocked_ids
-
-    # Determine if the user is "good" (allowed by default or explicitly)
-    allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-    is_good_user = allow_all_users or msg.author.id in allowed_users or not role_ids.isdisjoint(allowed_roles)
-
-    # Determine if the user is "bad" (not good or explicitly blocked)
-    is_bad_user = not is_good_user or msg.author.id in blocked_users or not role_ids.isdisjoint(blocked_roles)
-
-    if is_bad_user:
-        return False
-
-    # 3. Channel Validation
-    # Collect current channel ID, parent ID (for threads), and category ID
-    channel_ids: set[int] = set()
-    channel_ids_list: list[int | None] = [msg.channel.id, getattr(msg.channel, "parent_id", None), getattr(msg.channel, "category_id", None)]
-    for cid in channel_ids_list:
-        if cid is not None:
-            channel_ids.add(cid)
-
-    allowed_channels = permissions.channels.allowed_ids
-    blocked_channels = permissions.channels.blocked_ids
-
-    # Determine if the channel is "good"
-    is_good_channel = allow_dms if is_dm else (not allowed_channels or not channel_ids.isdisjoint(allowed_channels))
-
-    # Determine if the channel is "bad"
-    is_bad_channel = not is_good_channel or not channel_ids.isdisjoint(blocked_channels)
-
-    return not is_bad_channel
+DISCORD_API_TIMEOUT = 30.0
 
 
 def is_admin(user_id: int) -> bool:
@@ -93,7 +42,7 @@ async def fetch_history(
     :param bot_user: The bot's user object.
     :return: A list of Discord messages.
     """
-    logger.debug("Building message history... (Mode: %s)", "Channel" if use_channel_context else "Reply Chain")
+    logger.debug("Fetching message history... (Mode: %s)", "Channel" if use_channel_context else "Reply Chain")
     start_time = time.perf_counter()
 
     if use_channel_context:
@@ -117,8 +66,18 @@ async def _fetch_channel_history(
     :param max_messages: Maximum number of messages to fetch.
     :return: A list of Discord messages.
     """
+
+    async def collect_history() -> MessageList:
+        return [msg async for msg in message.channel.history(limit=max_messages - 1, before=message)]
+
+    try:
+        history = await asyncio.wait_for(collect_history(), timeout=DISCORD_API_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Timeout fetching channel history for message %s", message.id)
+        history = []
+
     message_history = [message]
-    message_history.extend([msg async for msg in message.channel.history(limit=max_messages - 1, before=message)])
+    message_history.extend(history)
     return message_history[:max_messages]
 
 
@@ -134,8 +93,11 @@ async def _fetch_reply_chain_history(
     :param bot_user: The bot's user object.
     :return: A list of Discord messages.
     """
-    # Fetch a batch of recent messages once to avoid individual API calls for every reply hop.
-    local_cache: MessageCache = {msg.id: msg async for msg in message.channel.history(limit=100, before=message)}
+    try:
+        local_cache: MessageCache = await asyncio.wait_for(collect_cache(message), timeout=DISCORD_API_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Timeout fetching reply chain history for message %s", message.id)
+        local_cache: MessageCache = {}
 
     message_history: MessageList = []
     history_ids: set[int] = set()
@@ -149,6 +111,15 @@ async def _fetch_reply_chain_history(
         current_msg = next_msg
 
     return message_history
+
+
+async def collect_cache(message: discord.Message) -> MessageCache:
+    """Collect a cache of recent messages before the given message.
+
+    :param message: The Discord message to collect history before.
+    :return: A dictionary mapping message IDs to Message objects.
+    """
+    return {msg.id: msg async for msg in message.channel.history(limit=100, before=message)}
 
 
 async def _get_next_message_in_chain(
@@ -241,122 +212,16 @@ async def fetch_referenced_message(current_msg: discord.Message, force_id: int |
         # Use the parent channel if it's a thread starter we're looking for
         channel = current_msg.channel
         if force_id and isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
-            return await channel.parent.fetch_message(target_id)
+            try:
+                return await asyncio.wait_for(channel.parent.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout fetching referenced message %s from parent channel", target_id)
+                return None
 
-        return await channel.fetch_message(target_id)
+        try:
+            return await asyncio.wait_for(channel.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("Timeout fetching referenced message %s", target_id)
+            return None
     except (discord.NotFound, discord.HTTPException):
         return None
-
-
-async def fetch_previous_message(current_msg: discord.Message, bot_user: discord.ClientUser) -> discord.Message | None:
-    """Fetch the immediately preceding message in the channel if it matches criteria."""
-    async for prev in current_msg.channel.history(before=current_msg, limit=1):
-        is_dm = current_msg.channel.type == discord.ChannelType.private
-        allowed_types = (discord.MessageType.default, discord.MessageType.reply)
-
-        if prev.type not in allowed_types:
-            continue
-
-        is_expected_author = prev.author in (bot_user, current_msg.author) if is_dm else prev.author == current_msg.author
-
-        if is_expected_author:
-            return prev
-    return None
-
-
-def get_embed_text(embed: discord.Embed) -> str:
-    """Extract text from an embed.
-
-    :param embed: The Discord embed to process.
-    :return: A string containing the title, description, and footer text.
-    """
-    fields: list[str | None] = [embed.title, embed.description, getattr(embed.footer, "text", None)]
-    return "\n".join(filter(None, fields))
-
-
-def get_component_text(component: discord.Component) -> str:
-    """Extract text from a component.
-
-    :param component: The Discord component to process.
-    :return: The text content if the component is a TextDisplay, otherwise an empty string.
-    """
-    return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
-
-
-def is_supported_attachment(attachment: discord.Attachment) -> bool:
-    """Check if attachment type is supported.
-
-    :param attachment: The Discord attachment to check.
-    :return: True if the attachment is a text or image file, False otherwise.
-    """
-    return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
-
-
-async def download_attachment(httpx_client: httpx.AsyncClient, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
-    """Download a Discord attachment using the provided HTTP client.
-
-    :param httpx_client: The shared HTTPX client instance.
-    :param attachment: The Discord attachment to download.
-    :return: A tuple containing the original attachment and the HTTP response (or None if failed).
-    """
-    try:
-        resp = await httpx_client.get(attachment.url)
-        resp.raise_for_status()
-    except (httpx.HTTPError, httpx.TimeoutException) as error:
-        logger.warning("Failed to download attachment %s (%s): %s", attachment.filename, attachment.url, error)
-        return attachment, None
-    else:
-        return attachment, resp
-
-
-async def init_msg_node(
-    msg: discord.Message,
-    msg_nodes: dict[int, MsgNode],
-    bot_user: discord.ClientUser,
-    httpx_client: httpx.AsyncClient,
-) -> None:
-    """Initialize a MsgNode for a message, processing attachments and text sources.
-
-    :param msg: The Discord message to process.
-    :param msg_nodes: The dictionary of processed message nodes.
-    :param bot_user: The bot's client user to determine roles.
-    :param httpx_client: The shared HTTPX client for downloads.
-    """
-    node = msg_nodes.setdefault(msg.id, MsgNode())
-    if node.text is not None:
-        return
-
-    async with node.lock:
-        if node.text is not None:
-            return
-
-        text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
-        text_parts.extend(get_embed_text(embed) for embed in msg.embeds)
-        text_parts.extend(get_component_text(c) for c in msg.components)
-
-        to_download = [a for a in msg.attachments if is_supported_attachment(a)]
-        downloads = await asyncio.gather(*(download_attachment(httpx_client, a) for a in to_download))
-
-        node.images = []
-        for attachment, resp in downloads:
-            if resp is None:
-                node.has_bad_attachments = True
-                continue
-
-            content_type = attachment.content_type or ""
-            if content_type.startswith("text"):
-                text_parts.append(resp.text)
-            elif content_type.startswith("image"):
-                base64_data = b64encode(resp.content).decode()
-                node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
-
-        node.text = "\n".join(filter(None, text_parts))
-        node.role = "assistant" if msg.author == bot_user else "user"
-        node.user_id = msg.author.id if node.role == "user" else None
-
-        author = msg.author
-        if msg.guild and not isinstance(author, discord.Member):
-            author = msg.guild.get_member(author.id) or author
-
-        node.user_display_name = author.display_name if node.role == "user" else None
-        node.has_bad_attachments |= len(msg.attachments) > len(to_download)
