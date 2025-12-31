@@ -142,7 +142,8 @@ class LLMCordBot(commands.Bot):
                 llm_payload = await self.message_service.construct_llm_payload(message, self.safe_user)
 
             with timer("LLM request"):
-                response_text = await self.llm_service.perform_completion(llm_payload)
+                async with message.channel.typing():
+                    response_text = await self.llm_service.perform_completion(llm_payload)
 
             with timer("Discord response"):
                 response_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response, bot_name=self.safe_user.display_name)
