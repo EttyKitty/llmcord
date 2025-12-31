@@ -3,12 +3,13 @@
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for current events, weather, facts, news, or any general question.",
+            "description": "Search the internet for real-time information, current events, news, facts outside your training data, or any general question that you can't properly answer on your own.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "A specific, keyword-rich search query optimized for a search engine."
                     }
                 },
                 "required": ["query"]
@@ -19,12 +20,13 @@
         "type": "function",
         "function": {
             "name": "open_link",
-            "description": "Fetch the content of a web page from a given URL for deeper reading.",
+            "description": "Retrieve the full text content of a specific URL. Use this to read a specific article, documentation page, or website provided by the user, or to deep-dive into a search result that looks promising.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "The full, valid URL to fetch (e.g., https://example.com/article)."
                     }
                 },
                 "required": ["url"]
