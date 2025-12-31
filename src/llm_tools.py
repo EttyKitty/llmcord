@@ -131,7 +131,7 @@ class ToolManager:
                 "Connection": "keep-alive",
             }
             # Follow redirects and enable HTTP/2 for better compatibility with modern sites.
-            async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=True, http2=True) as client:
+            async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=False, http2=True) as client:
                 logger.debug("open_link: Sending HTTP request to: %s", url)
                 response = await client.get(url)
                 response.raise_for_status()
