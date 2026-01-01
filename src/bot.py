@@ -25,8 +25,6 @@ from .message_service import MessageService
 from .regex_utils import process_response_text
 from .time_utils import timer
 
-MAX_MESSAGE_NODES: Final[int] = 500
-DISCORD_CHAR_LIMIT: Final[int] = 2000
 DISCORD_REST_SUCCESS: Final[int] = 200
 DISCORD_REST_INTERVAL: Final[int] = 60
 
@@ -135,7 +133,7 @@ class LLMCordBot(commands.Bot):
         if not self._valid_trigger_message(message):
             return
 
-        logger.info("Message recieved. User: %s ID: %d", message.author.name, message.author.id)
+        logger.info("Message received. User: %s ID: %d", message.author.name, message.author.id)
 
         try:
             with timer("LLM payload preparation"):
@@ -194,18 +192,19 @@ class LLMCordBot(commands.Bot):
 
     async def _periodic_verification(self, interval: int) -> None:
         """Periodically verify Discord REST API connection."""
-        while True:
-            verified = await self._verify_discord_rest()
-            if not verified:
-                logger.warning("Periodic Discord REST verification failed")
-            await asyncio.sleep(interval)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                verified = await self._verify_discord_rest()
+                if not verified:
+                    logger.warning("Periodic Discord REST verification failed")
+        except asyncio.CancelledError:
+            logger.debug("Periodic verification task cancelled")
 
     def _is_message_allowed(self, message: discord.Message) -> bool:
         """Check if the message author and channel are allowed based on configuration.
 
         :param message: The Discord message to check.
-        :param permissions: The permissions configuration object.
-        :param allow_dms: Whether the bot is allowed to respond in Direct Messages.
         :return: True if allowed, False otherwise.
         """
         is_dm = message.channel.type == discord.ChannelType.private

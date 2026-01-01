@@ -10,6 +10,7 @@ from typing import ClassVar, cast
 
 from .time_utils import time_performance
 
+# Third-party loggers that produce excessive output and are silenced to WARNING level
 NOISY_LOGGERS = [
     "primp",
     "rquest",
@@ -137,6 +138,7 @@ def setup_logging() -> None:
 
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 
 # Initialize immediately on import
 setup_logging()

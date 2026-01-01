@@ -17,6 +17,8 @@ litellm.modify_params = True
 
 
 class LLMService:
+    """Service for performing LLM completions with tool-calling support."""
+
     def __init__(self, httpx_client: httpx.AsyncClient) -> None:
         """Initialize the LLM service.
 
@@ -27,24 +29,28 @@ class LLMService:
     async def perform_completion(self, chat_params: dict[str, Any]) -> str:
         """Perform LLM completion with tool calling."""
         try:
-            request_logger.log(chat_params)
+            params = chat_params.copy()
+            params["messages"] = list(params["messages"])
+
+            request_logger.log(params)
             for i in range(5):
                 async with asyncio.timeout(60):
-                    response = await litellm.acompletion(**chat_params, client=self.httpx_client)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
+                    response = await litellm.acompletion(**params, client=self.httpx_client)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
 
                 model_response = cast("Any", response)  # litellm types are incomplete
 
                 if not hasattr(model_response, "choices") or not model_response.choices:
+                    logger.debug("Iteration %d: No choices in response", i)
                     continue
 
                 message = model_response.choices[0].message  # litellm types are incomplete
 
                 if hasattr(message, "tool_calls") and message.tool_calls:
                     logger.debug("Iteration %d: LLM requested %d tool calls", i, len(message.tool_calls))
-                    chat_params["messages"].append(message.model_dump())
+                    params["messages"].append(message.model_dump())
 
                     results = await asyncio.gather(*(self._execute_tool(tc) for tc in message.tool_calls))
-                    chat_params["messages"].extend(results)
+                    params["messages"].extend(results)
                     continue
 
                 if hasattr(message, "content") and message.content is not None:
@@ -54,8 +60,9 @@ class LLMService:
         except Exception:
             logger.exception("Error during LLM completion")
             return ""
-        else:
-            return ""
+
+        logger.warning("Tool call loop exhausted after 5 iterations without final response")
+        return ""
 
     async def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         """Execute a single tool call."""

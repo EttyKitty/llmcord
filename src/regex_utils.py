@@ -7,6 +7,7 @@ chains and provides utility functions for sanitizing text input/output.
 import logging
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import discord
 
@@ -27,6 +28,8 @@ TYPOGRAPHY_MAP = str.maketrans(
         "…": "...",
     },
 )
+REGEX_BRACKETED_PREFIX = re.compile(r"^\[.*?\][\s:]+", re.IGNORECASE)
+REGEX_GENERIC_ASSISTANT_PREFIX = re.compile(r"^(Assistant|AI|System)[\s:]+", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ def process_response_text(text: str, *, sanitize: bool, bot_name: str) -> str:
 
     :param text: The raw response text.
     :param sanitize: Whether to apply the clean_response utility.
+    :param bot_name: The bot's display name for prefix removal.
     :return: The processed text.
     """
     final_text = text
@@ -118,27 +122,33 @@ def sanitize_symbols(username: str) -> str:
     return REGEX_USER_NAME_SANITIZER.sub("", username)
 
 
-def remove_prefixes(text: str, bot_name: str) -> str:
-    """Remove prefixes from the start of the LLM response."""
-    # 1. Remove leading/trailing whitespace
-    text = text.strip()
-
+@lru_cache(maxsize=128)
+def _get_prefix_patterns(bot_name: str) -> list[re.Pattern[str]]:
+    """Get compiled regex patterns for the given bot name."""
     name_esc = re.escape(bot_name)
-
-    patterns = [
-        # 1. Full header: [Timestamp] Name(ID):
-        rf"^\[.*?\]\s*{name_esc}(?:\(\d+\))?[\s:]+",
-        # 2. Name + ID only: Name(ID):
-        rf"^{name_esc}(?:\(\d+\))?[\s:]+",
-        # 3. Matches: BotName:
-        rf"^{name_esc}[\s:]+",
-        # 4. Matches: [2024-05-20 14:00]:
-        r"^\[.*?\][\s:]+",
-        # 5. Matches generic: "Assistant: " or "AI: "
-        r"^(Assistant|AI|System)[\s:]+",
+    return [
+        re.compile(rf"^\[.*?\]\s*{name_esc}(?:\(\d+\))?[\s:]+", re.IGNORECASE),
+        re.compile(rf"^{name_esc}(?:\(\d+\))?[\s:]+", re.IGNORECASE),
+        re.compile(rf"^{name_esc}[\s:]+", re.IGNORECASE),
+        REGEX_BRACKETED_PREFIX,
+        REGEX_GENERIC_ASSISTANT_PREFIX,
     ]
 
+
+def remove_prefixes(text: str, bot_name: str) -> str:
+    """Remove common prefixes from the start of the LLM response.
+
+    Strips headers like timestamps, bot name identifiers, and generic
+    assistant prefixes that some LLMs prepend to responses.
+
+    :param text: The response text to clean.
+    :param bot_name: The bot's display name to match in prefixes.
+    :return: The text with leading prefixes removed.
+    """
+    text = text.strip()
+    patterns = _get_prefix_patterns(bot_name)
+
     for pattern in patterns:
-        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+        text = pattern.sub("", text).strip()
 
     return text
