@@ -1,7 +1,7 @@
-"""Data models and text processing utilities.
+"""Discord utility functions for message history and permissions.
 
-This module defines the structure for message nodes used in conversation
-chains and provides utility functions for sanitizing text input/output.
+This module provides utility functions for fetching message history,
+checking admin permissions, and managing message caches.
 """
 
 import asyncio
@@ -97,7 +97,7 @@ async def _fetch_reply_chain_history(
         local_cache: MessageCache = await asyncio.wait_for(collect_cache(message), timeout=DISCORD_API_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Timeout fetching reply chain history for message %s", message.id)
-        local_cache: MessageCache = {}
+        local_cache = {}
 
     message_history: MessageList = []
     history_ids: set[int] = set()

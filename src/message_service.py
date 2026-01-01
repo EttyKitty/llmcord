@@ -18,7 +18,7 @@ from discord import Message
 from litellm import utils as litellm_utils
 
 from .config_manager import ConfigValue, RootConfig, config_manager
-from .custom_types import BuildMessagesParams, MessageNode, MessagePayloadParams
+from .custom_types import BuildMessagesParams, MessageNode, MessageNodeCache, MessagePayloadParams
 from .discord_utils import fetch_history
 from .llm_tools import tool_manager
 from .regex_utils import replace_placeholders, sanitize_symbols
@@ -47,19 +47,6 @@ class MessageService:
         self.httpx_client = httpx_client
         self.user = user
         self.message_nodes: dict[int, MessageNode] = {}
-
-    def release_node_locks(self, msgs: list[discord.Message], full_content: str) -> None:
-        """Update and release locks on message nodes.
-
-        :param msgs: The messages that were sent.
-        :param full_content: The complete response content.
-        """
-        for msg in msgs:
-            node = self.message_nodes.get(msg.id)
-            if node:
-                node.text = full_content
-                if hasattr(node.lock, "locked") and node.lock.locked():
-                    node.lock.release()
 
     def prune_msg_nodes(self) -> None:
         """Prune old message nodes to prevent memory leaks."""
@@ -115,7 +102,7 @@ class MessageService:
                     # This is the most likely place for a hang
                     downloads = await asyncio.gather(*(download_attachment(self.httpx_client, a) for a in to_download))
                     # logger.debug("[%s] Downloads completed in %.4fs", msg_id, time.perf_counter() - download_start)
-                except Exception:
+                except (httpx.HTTPError, httpx.TimeoutException, asyncio.TimeoutError):
                     downloads = []
             else:
                 downloads = []
@@ -209,7 +196,7 @@ class MessageService:
         self,
         message: discord.Message,
         message_history: list[discord.Message],
-        message_nodes: dict[int, Any],
+        message_nodes: MessageNodeCache,
         model: str,
         provider: str,
         bot_user: discord.ClientUser,
@@ -379,6 +366,7 @@ class MessageService:
             if message_payload:
                 messages_payload.append(message_payload)
 
+        # Reverse to ensure chronological order (oldest first) for LLM context
         return messages_payload[::-1]
 
 

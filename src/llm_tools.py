@@ -17,7 +17,7 @@ from ddgs import (
     DDGS,  # type: ignore[import-untyped] # DDGS library has incomplete type stubs, remove when fixed upstream
 )
 
-MAX_CONTENT_SIZE = 500000  # 50KB limit for fetched content
+MAX_CONTENT_SIZE = 500000
 TOOLS_PATH = Path(__file__).parent / "llm_tools.json"
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,8 @@ class ToolManager:
         else:
             return f"Error: Tool '{name}' not found."
 
-    async def web_search(self, query: str) -> str:
+    @staticmethod
+    async def web_search(query: str) -> str:
         """Perform a web search using DuckDuckGo."""
         if not query:
             return "Error: No query provided."
@@ -65,7 +66,8 @@ class ToolManager:
 
         return "\n---\n".join(results) if results else "No results found."
 
-    def _is_safe_host(self, netloc: str) -> bool:
+    @staticmethod
+    def _is_safe_host(netloc: str) -> bool:
         """Check if the host is safe to access (not localhost or private IP)."""
         # Remove port if present
         host = netloc.split(":")[0].lower()
@@ -74,26 +76,30 @@ class ToolManager:
         if host in ("localhost", "127.0.0.1", "::1"):
             return False
 
-        # Try to parse as IP
         try:
-            ip = ipaddress.ip_address(host)
-            # Block private, loopback, link-local IPs
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return False
-        except ValueError:
-            # Not an IP, it's a hostname
-            # For hostnames, try to resolve and check IPs
+            # Collect all resolved addresses first
+            all_addrs: list[Any] = []
+
+            # Try IPv4
             try:
-                # Only check the first resolved IP for performance
                 addr_info = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-                if addr_info:
-                    resolved_ip = addr_info[0][4][0]
-                    ip = ipaddress.ip_address(resolved_ip)
-                    if ip.is_private or ip.is_loopback or ip.is_link_local:
-                        return False
-            except (socket.gaierror, ValueError):
-                # If can't resolve, allow (could be public domain)
+                all_addrs.extend(info[4][0] for info in addr_info)
+            except socket.gaierror:
                 pass
+
+            # Try IPv6
+            try:
+                addr_info = socket.getaddrinfo(host, None, socket.AF_INET6, socket.SOCK_STREAM)
+                all_addrs.extend(info[4][0] for info in addr_info)
+            except socket.gaierror:
+                pass
+
+            for resolved_ip in all_addrs:
+                ip = ipaddress.ip_address(resolved_ip)
+                if ip.is_private or ip.is_loopback or ip.is_link_local:
+                    return False
+        except ValueError:
+            pass
 
         return True
 
@@ -130,7 +136,6 @@ class ToolManager:
                 "Referer": "https://www.google.com/",
                 "Connection": "keep-alive",
             }
-            # Follow redirects and enable HTTP/2 for better compatibility with modern sites.
             async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=False, http2=True) as client:
                 logger.debug("open_link: Sending HTTP request to: %s", url)
                 response = await client.get(url)
@@ -139,21 +144,19 @@ class ToolManager:
 
                 raw_html = response.text
 
-                # Extract main content using trafilatura
                 logger.debug("open_link: Extracting main content from HTML")
                 extracted_content = trafilatura.extract(raw_html, include_comments=False)
 
                 if not extracted_content:
                     logger.debug("open_link: No extractable content found, returning plain text")
-                    extracted_content = raw_html[:3000]  # Fallback: first 3KB of raw content
+                    extracted_content = raw_html[:3000]
 
                 content_length = len(extracted_content)
                 logger.debug("open_link: Response content length: %d bytes", content_length)
 
-                # Limit content size to prevent abuse
                 if content_length > MAX_CONTENT_SIZE:
                     logger.debug("open_link: Content exceeds max size limit (%d > %d)", content_length, MAX_CONTENT_SIZE)
-                    return "Error: Page content is too large! Opening URL failed! REPORT!"
+                    return f"Error: Page content exceeds maximum size limit ({MAX_CONTENT_SIZE} bytes)!"
 
                 logger.info("open_link: Successfully extracted content from: %s", url)
                 return extracted_content
