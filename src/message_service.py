@@ -5,7 +5,6 @@ including validation, response sending, and node management.
 """
 
 import asyncio
-import logging
 import os
 from base64 import b64encode
 from collections.abc import Sequence
@@ -16,6 +15,7 @@ import httpx
 import litellm
 from discord import Message
 from litellm import utils as litellm_utils
+from loguru import logger
 
 from .config_manager import ConfigValue, RootConfig, config_manager
 from .custom_types import BuildMessagesParams, MessageNode, MessageNodeCache, MessagePayloadParams
@@ -27,7 +27,6 @@ from .time_utils import time_performance
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 MAX_MESSAGE_NODES: int = 500
 
-logger = logging.getLogger(__name__)
 config = config_manager.config
 os.environ["LITELLM_LOG"] = "ERROR"
 litellm.telemetry = False
@@ -54,7 +53,7 @@ class MessageService:
             return
 
         to_remove_count = len(self.message_nodes) - MAX_MESSAGE_NODES
-        logger.debug("Pruning %d old MsgNodes...", to_remove_count)
+        logger.debug("Pruning {} old MsgNodes...", to_remove_count)
 
         sorted_ids = sorted(self.message_nodes.keys())
         ids_to_delete = sorted_ids[:to_remove_count]
@@ -62,32 +61,32 @@ class MessageService:
         for msg_id in ids_to_delete:
             self.message_nodes.pop(msg_id, None)
 
-        logger.debug("Successfully pruned %d nodes!", len(ids_to_delete))
+        logger.debug("Successfully pruned {} nodes!", len(ids_to_delete))
 
     async def _init_msg_node(self, msg: discord.Message) -> None:
         """Initialize a MessageNode with granular debug logging."""
         msg_id = msg.id
         # start_time = time.perf_counter()
 
-        # logger.debug("[%s] Starting _init_msg_node", msg_id)
+        # logger.debug("[{}] Starting _init_msg_node", msg_id)
         node = self.message_nodes.setdefault(msg_id, MessageNode())
 
         if node.text is not None:
-            # logger.debug("[%s] Node already initialized, skipping", msg_id)
+            # logger.debug("[{}] Node already initialized, skipping", msg_id)
             return
 
-        # logger.debug("[%s] Attempting to acquire lock...", msg_id)
+        # logger.debug("[{}] Attempting to acquire lock...", msg_id)
         # lock_start = time.perf_counter()
 
         async with node.lock:
-            # logger.debug("[%s] Lock acquired in %.4fs", msg_id, time.perf_counter() - lock_start)
+            # logger.debug("[{}] Lock acquired in {:.4f}s", msg_id, time.perf_counter() - lock_start)
 
             if node.text is not None:
-                # logger.debug("[%s] Node initialized by another task while waiting for lock", msg_id)
+                # logger.debug("[{}] Node initialized by another task while waiting for lock", msg_id)
                 return
 
             # 1. Text Extraction
-            # logger.debug("[%s] Extracting text from content/embeds/components", msg_id)
+            # logger.debug("[{}] Extracting text from content/embeds/components", msg_id)
             text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
             text_parts.extend(get_embed_text(embed) for embed in msg.embeds)
             text_parts.extend(get_component_text(c) for c in msg.components)
@@ -95,40 +94,40 @@ class MessageService:
             # 2. Attachment Handling
             to_download = [a for a in msg.attachments if is_supported_attachment(a)]
             if to_download:
-                # logger.debug("[%s] Found %d attachments to download", msg_id, len(to_download))
+                # logger.debug("[{}] Found {} attachments to download", msg_id, len(to_download))
                 # download_start = time.perf_counter()
 
                 try:
                     # This is the most likely place for a hang
                     downloads = await asyncio.gather(*(download_attachment(self.httpx_client, a) for a in to_download))
-                    # logger.debug("[%s] Downloads completed in %.4fs", msg_id, time.perf_counter() - download_start)
+                    # logger.debug("[{}] Downloads completed in {:.4f}s", msg_id, time.perf_counter() - download_start)
                 except (httpx.HTTPError, httpx.TimeoutException, asyncio.TimeoutError):
                     downloads = []
             else:
                 downloads = []
 
             # 3. Processing Results
-            # logger.debug("[%s] Processing %d download results", msg_id, len(downloads))
+            # logger.debug("[{}] Processing {} download results", msg_id, len(downloads))
             node.images = []
             for attachment, resp in downloads:
                 if resp is None:
-                    # logger.warning("[%s] Failed download for attachment: %s", msg_id, attachment.filename)
+                    # logger.warning("[{}] Failed download for attachment: {}", msg_id, attachment.filename)
                     node.has_bad_attachments = True
                     continue
 
                 content_type = attachment.content_type or ""
                 if content_type.startswith("text"):
                     # Potential hang if file is massive
-                    # logger.debug("[%s] Reading text file: %s", msg_id, attachment.filename)
+                    # logger.debug("[{}] Reading text file: {}", msg_id, attachment.filename)
                     text_parts.append(resp.text)
                 elif content_type.startswith("image"):
                     # Potential hang (CPU bound) if image is massive
-                    # logger.debug("[%s] Encoding image: %s", msg_id, attachment.filename)
+                    # logger.debug("[{}] Encoding image: {}", msg_id, attachment.filename)
                     base64_data = b64encode(resp.content).decode()
                     node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
 
             # 4. Metadata Assignment
-            # logger.debug("[%s] Finalizing node metadata", msg_id)
+            # logger.debug("[{}] Finalizing node metadata", msg_id)
             node.text = "\n".join(filter(None, text_parts))
             node.role = "assistant" if msg.author == self.user else "user"
             node.user_id = msg.author.id
@@ -143,7 +142,7 @@ class MessageService:
 
             node.has_bad_attachments |= len(msg.attachments) > len(to_download)
 
-        # logger.debug("[%s] _init_msg_node finished. Total time: %.4fs", msg_id, time.perf_counter() - start_time)
+        # logger.debug("[{}] _init_msg_node finished. Total time: {:.4f}s", msg_id, time.perf_counter() - start_time)
 
     @time_performance("Message nodes initialization")
     async def _initialize_message_nodes(self, message_history: list[discord.Message]) -> None:
@@ -160,9 +159,9 @@ class MessageService:
         # Log failures for debugging
         for i, result in enumerate(results):
             if isinstance(result, asyncio.TimeoutError):
-                logger.warning("Message %s timed out during initialization (10s limit)", message_history[i].id)
+                logger.warning("Message {} timed out during initialization (10s limit)", message_history[i].id)
             elif isinstance(result, Exception):
-                logger.error("Message %s failed initialization: %s", message_history[i].id, result)
+                logger.error("Message {} failed initialization: {}", message_history[i].id, result)
 
     async def construct_llm_payload(
         self,
@@ -409,7 +408,7 @@ async def download_attachment(httpx_client: httpx.AsyncClient, attachment: disco
         resp = await httpx_client.get(attachment.url)
         resp.raise_for_status()
     except (httpx.HTTPError, httpx.TimeoutException) as error:
-        logger.warning("Failed to download attachment %s (%s): %s", attachment.filename, attachment.url, error)
+        logger.warning("Failed to download attachment {} ({}): {}", attachment.filename, attachment.url, error)
         return attachment, None
     else:
         return attachment, resp

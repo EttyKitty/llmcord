@@ -5,7 +5,6 @@ This module defines the tools available to the LLM and the logic to execute them
 
 import ipaddress
 import json
-import logging
 import socket
 import urllib.parse
 from pathlib import Path
@@ -16,11 +15,10 @@ import trafilatura
 from ddgs import (
     DDGS,  # type: ignore[import-untyped] # DDGS library has incomplete type stubs, remove when fixed upstream
 )
+from loguru import logger
 
 MAX_CONTENT_SIZE = 500000
 TOOLS_PATH = Path(__file__).parent / "llm_tools.json"
-
-logger = logging.getLogger(__name__)
 
 
 class ToolManager:
@@ -42,7 +40,7 @@ class ToolManager:
             if name == "ignore_message":
                 return await self.ignore_message(arguments.get("reason", "No reason provided"))
         except Exception as e:
-            logger.exception("Failed to execute tool %s", name)
+            logger.exception("Failed to execute tool {}", name)
             return f"Error executing tool: {e}"
         else:
             return f"Error: Tool '{name}' not found."
@@ -53,7 +51,7 @@ class ToolManager:
         if not query:
             return "Error: No query provided."
 
-        logger.info("Performing web search for: %s", query)
+        logger.info("Performing web search for: {}", query)
         results: list[str] = []
         try:
             # The latest DDGS version works best as a context manager
@@ -111,23 +109,23 @@ class ToolManager:
             logger.debug("open_link: No URL provided")
             return "Error: No URL provided."
 
-        logger.debug("open_link: Validating URL: %s", url)
+        logger.debug("open_link: Validating URL: {}", url)
 
         # Validate URL
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            logger.debug("open_link: Invalid scheme '%s' for URL: %s", parsed.scheme, url)
+            logger.debug("open_link: Invalid scheme '{}' for URL: {}", parsed.scheme, url)
             return "Error: Invalid URL scheme. Only HTTP and HTTPS are allowed."
         if not parsed.netloc:
-            logger.debug("open_link: Missing netloc for URL: %s", url)
+            logger.debug("open_link: Missing netloc for URL: {}", url)
             return "Error: Invalid URL format."
 
-        logger.debug("open_link: Checking host safety for: %s", parsed.netloc)
+        logger.debug("open_link: Checking host safety for: {}", parsed.netloc)
         if not self._is_safe_host(parsed.netloc):
-            logger.debug("open_link: Host rejected (localhost or private network): %s", parsed.netloc)
+            logger.debug("open_link: Host rejected (localhost or private network): {}", parsed.netloc)
             return "Error: Access to localhost or private networks is not allowed for security reasons."
 
-        logger.info("open_link: URL validation passed, fetching content from: %s", url)
+        logger.info("open_link: URL validation passed, fetching content from: {}", url)
 
         try:
             headers = {
@@ -139,10 +137,10 @@ class ToolManager:
                 "Connection": "keep-alive",
             }
             async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=False, http2=True) as client:
-                logger.debug("open_link: Sending HTTP request to: %s", url)
+                logger.debug("open_link: Sending HTTP request to: {}", url)
                 response = await client.get(url)
                 response.raise_for_status()
-                logger.debug("open_link: HTTP %d response received", response.status_code)
+                logger.debug("open_link: HTTP {} response received", response.status_code)
 
                 raw_html = response.text
 
@@ -154,22 +152,22 @@ class ToolManager:
                     extracted_content = raw_html[:3000]
 
                 content_length = len(extracted_content)
-                logger.debug("open_link: Response content length: %d bytes", content_length)
+                logger.debug("open_link: Response content length: {} bytes", content_length)
 
                 if content_length > MAX_CONTENT_SIZE:
-                    logger.debug("open_link: Content exceeds max size limit (%d > %d)", content_length, MAX_CONTENT_SIZE)
+                    logger.debug("open_link: Content exceeds max size limit ({} > {})", content_length, MAX_CONTENT_SIZE)
                     return f"Error: Page content exceeds maximum size limit ({MAX_CONTENT_SIZE} bytes)!"
 
-                logger.info("open_link: Successfully extracted content from: %s", url)
+                logger.info("open_link: Successfully extracted content from: {}", url)
                 return extracted_content
         except httpx.TimeoutException:
-            logger.debug("open_link: Request timed out for: %s", url)
+            logger.debug("open_link: Request timed out for: {}", url)
             return "Error: Request timed out."
         except httpx.HTTPStatusError as e:
-            logger.debug("open_link: HTTP error %d for URL: %s", e.response.status_code, url)
+            logger.debug("open_link: HTTP error {} for URL: {}", e.response.status_code, url)
             return f"Error: HTTP {e.response.status_code} - {e.response.reason_phrase}"
         except Exception as e:
-            logger.exception("open_link: Unexpected error fetching URL: %s", url)
+            logger.exception("open_link: Unexpected error fetching URL: {}", url)
             return f"Error: Failed to fetch content - {e}"
 
     @staticmethod
@@ -179,7 +177,8 @@ class ToolManager:
         Returns a sentinel string that the bot logic can intercept to
         cancel the response.
         """
-        logger.info("LLM decided to ignore message. Reason: %s", reason)
+        logger.info("LLM decided to ignore message. Reason: {}", reason)
         return f"__STOP_RESPONSE__|{reason}"
+
 
 tool_manager: ToolManager = ToolManager()

@@ -4,9 +4,12 @@ import ctypes
 import json
 import logging
 import os
+import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import ClassVar, cast
+from typing import cast
+
+from loguru import logger
 
 from .time_utils import time_performance
 
@@ -25,7 +28,6 @@ NOISY_LOGGERS = [
     "LiteLLM Proxy",
 ]
 
-logger = logging.getLogger(__name__)
 
 # --- Fix for Windows Colors ---
 if os.name == "nt":
@@ -96,48 +98,16 @@ class RequestLogger:
             logger.exception("Failed to log the payload!")
 
 
-class ColoredFormatter(logging.Formatter):
-    """Custom formatter to add colors to logs based on severity."""
-
-    # ANSI Escape Codes
-    grey = "\x1b[38;20m"
-    green = "\x1b[32;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-
-    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-
-    FORMATS: ClassVar[dict[int, str]] = {
-        logging.DEBUG: grey + fmt + reset,
-        logging.INFO: green + fmt + reset,
-        logging.WARNING: yellow + fmt + reset,
-        logging.ERROR: red + fmt + reset,
-        logging.CRITICAL: bold_red + fmt + reset,
-    }
-
-    def format(self, record: logging.LogRecord) -> str:
-        """Format the specified record as text.
-
-        :param record: The log record to format.
-        :return: The formatted log string.
-        """
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
-        return formatter.format(record)
-
-
 def setup_logging() -> None:
-    """Configure the root logger with colored output and silence noisy libraries."""
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(ColoredFormatter())
+    """Configure Loguru to replace standard logging and handle colors/sinks."""
+    logger.remove()
 
-    logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
+    log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 
-    for logger_name in NOISY_LOGGERS:
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    logger.add(sys.stderr, format=log_format, level="DEBUG", colorize=True)
+
+    for noisy in NOISY_LOGGERS:
+        logger.disable(noisy)
 
 
 # Initialize immediately on import

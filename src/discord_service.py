@@ -1,13 +1,10 @@
-import logging
-
 import discord
+from loguru import logger
 
 from .config_manager import RootConfig
 from .custom_types import MessageNodeCache
 
 DISCORD_CHAR_LIMIT: int = 2000
-
-logger = logging.getLogger(__name__)
 
 
 class DiscordService:

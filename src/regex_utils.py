@@ -4,12 +4,12 @@ This module defines the structure for message nodes used in conversation
 chains and provides utility functions for sanitizing text input/output.
 """
 
-import logging
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
 
 import discord
+from loguru import logger
 
 from .time_utils import time_performance
 
@@ -30,8 +30,6 @@ TYPOGRAPHY_MAP = str.maketrans(
 )
 REGEX_BRACKETED_PREFIX = re.compile(r"^\[.*?\][\s:]+", re.IGNORECASE)
 REGEX_GENERIC_ASSISTANT_PREFIX = re.compile(r"^(Assistant|AI|System)[\s:]+", re.IGNORECASE)
-
-logger = logging.getLogger(__name__)
 
 
 def clean_response(text: str) -> str:
@@ -90,8 +88,8 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or ""
 
     placeholders: dict[str, str] = {
-        "{date}": now.strftime("%B %d %Y"),
-        "{time}": now.strftime("%H:%M:%S %Z%z"),
+        "{date}": now.strftime("%B {} %Y"),
+        "{time}": now.strftime("%H:%M:{} %Z%z"),
         "{bot_name}": bot_user.display_name,
         "{bot_id}": str(bot_user.id),
         "{model}": model,

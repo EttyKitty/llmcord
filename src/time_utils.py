@@ -8,7 +8,7 @@ from collections.abc import Callable, Coroutine, Generator
 from contextlib import contextmanager
 from typing import Any, ParamSpec, TypeVar, cast
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -27,7 +27,7 @@ class Trace:
         now = time.perf_counter()
         duration = now - self.last
         self.last = now
-        logger.debug("%s: %.4f seconds", label, duration)
+        logger.debug("{}: {:.4f} seconds", label, duration)
 
 
 @contextmanager
@@ -35,11 +35,11 @@ def timer(label: str, level: int = logging.DEBUG) -> Generator[None, None, None]
     """Log the duration of a block of code."""
     start = time.perf_counter()
     try:
-        logger.log(level, "%s...", label)
+        logger.log(level, "{}...", label)
         yield
     finally:
         duration = time.perf_counter() - start
-        logger.log(level, "%s took %.4f seconds", label, duration)
+        logger.log(level, "{} took {:.4f} seconds", label, duration)
 
 
 def time_performance(label: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -51,9 +51,9 @@ def time_performance(label: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
             @functools.wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 start = time.perf_counter()
-                logger.debug("%s...", label)
+                logger.debug("{}...", label)
                 result = await cast("Coroutine[Any, Any, R]", func(*args, **kwargs))
-                logger.debug("%s took %.4f seconds", label, time.perf_counter() - start)
+                logger.debug("{} took {:.4f} seconds", label, time.perf_counter() - start)
                 return result
 
             return cast("Callable[P, R]", async_wrapper)
@@ -61,9 +61,9 @@ def time_performance(label: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
         @functools.wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             start = time.perf_counter()
-            logger.debug("%s...", label)
+            logger.debug("{}...", label)
             result = func(*args, **kwargs)
-            logger.debug("%s took %.4f seconds", label, time.perf_counter() - start)
+            logger.debug("{} took {:.4f} seconds", label, time.perf_counter() - start)
             return result
 
         return sync_wrapper
