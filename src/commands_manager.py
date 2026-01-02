@@ -3,17 +3,14 @@
 This module handles the slash commands for dynamic bot configuration.
 """
 
-import logging
-
 import discord
 from discord import app_commands
 from discord.app_commands import Choice
 from discord.ext import commands
+from loguru import logger
 
 from .config_manager import EDITABLE_SETTINGS, config_manager
 from .discord_utils import is_admin
-
-logger = logging.getLogger(__name__)
 
 
 class ConfigurationCog(commands.Cog):
@@ -36,7 +33,7 @@ class ConfigurationCog(commands.Cog):
 
         config_manager.set_default_model(model)
         channel_name = getattr(interaction.channel, "name", "DM")
-        logger.info("Admin %s switched default model to %s (command sent from #%s)", interaction.user.name, model, channel_name)
+        logger.info("Admin {} switched default model to {} (command sent from #{})", interaction.user.name, model, channel_name)
         await interaction.response.send_message(f"[Default model set to `{model}`.]")
 
     @config_model.autocomplete("model")
@@ -56,7 +53,7 @@ class ConfigurationCog(commands.Cog):
             return
 
         config_manager.load_config()
-        logger.info("Admin %s reloaded the configuration", interaction.user.name)
+        logger.info("Admin {} reloaded the configuration", interaction.user.name)
         await interaction.response.send_message("Configuration reloaded from disk.", ephemeral=True)
 
     @config_group.command(name="channelmodel", description="Switch the model for a specific channel")
@@ -79,7 +76,7 @@ class ConfigurationCog(commands.Cog):
             channel_mention = "Direct Messages"
             channel_name = channel_mention
 
-        logger.info("Admin %s switched channel model to %s in #%s (%s)", interaction.user.name, model, channel_name, target_channel.id)
+        logger.info("Admin {} switched channel model to {} in #{} ({})", interaction.user.name, model, channel_name, target_channel.id)
 
         await interaction.response.send_message(f"[`channel_model` for {channel_mention} set to: `{model}`.]")
 
@@ -143,7 +140,7 @@ class ConfigurationCog(commands.Cog):
         # Apply update
         config_manager.update_setting(key, parsed_value)
 
-        logger.info("Admin %s changed config %s to %s", interaction.user.name, key, parsed_value)
+        logger.info("Admin {} changed config {} to {}", interaction.user.name, key, parsed_value)
         await interaction.response.send_message(f"[Configuration updated: `{key}` set to `{parsed_value}`.]")
 
     def _parse_config_value(self, value: str, target_type: type) -> int | bool | float | str:

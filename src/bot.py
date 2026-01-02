@@ -7,7 +7,6 @@ OpenAI-compatible APIs.
 """
 
 import asyncio
-import logging
 import threading
 import time
 from typing import Final
@@ -16,6 +15,7 @@ import aiohttp
 import discord
 import httpx
 from discord.ext import commands
+from loguru import logger
 
 from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
@@ -27,8 +27,6 @@ from .time_utils import timer
 
 DISCORD_REST_SUCCESS: Final[int] = 200
 DISCORD_REST_INTERVAL: Final[int] = 60
-
-logger = logging.getLogger(__name__)
 
 
 class LLMCordBot(commands.Bot):
@@ -71,11 +69,11 @@ class LLMCordBot(commands.Bot):
         """
         start_time = time.perf_counter()
         super().__init__(command_prefix="?", intents=intents, activity=activity)
-        logger.debug("Bot init finished in %.2f seconds", time.perf_counter() - start_time)
+        logger.debug("Bot init finished in {:.2f} seconds", time.perf_counter() - start_time)
 
         start_time = time.perf_counter()
         self.httpx_client = httpx.AsyncClient()
-        logger.debug("HTTPX client set in %.2f seconds", time.perf_counter() - start_time)
+        logger.debug("HTTPX client set in {:.2f} seconds", time.perf_counter() - start_time)
         self.exit_code: int = 0
 
         # Initialize services after bot is ready
@@ -93,12 +91,12 @@ class LLMCordBot(commands.Bot):
         start_time = time.perf_counter()
         logger.debug("Setting up commands...")
         await setup_commands(self)
-        logger.debug("Commands setup finished in %.2f seconds", time.perf_counter() - start_time)
+        logger.debug("Commands setup finished in {:.2f} seconds", time.perf_counter() - start_time)
 
         sync_start = time.perf_counter()
         logger.debug("Syncing command tree...")
         await self.tree.sync()
-        logger.debug("Command tree synced in %.2f seconds!", time.perf_counter() - sync_start)
+        logger.debug("Command tree synced in {:.2f} seconds!", time.perf_counter() - sync_start)
 
         # Initialize services now that bot user is available
         logger.debug("Initializing services...")
@@ -113,10 +111,10 @@ class LLMCordBot(commands.Bot):
             logger.warning("Discord REST verification failed")
             self.exit_code = 0
         else:
-            logger.info("Bot ready. Logged in as %s. Total hook setup time: %.2f seconds", self.safe_user, time.perf_counter() - start_time)
+            logger.info("Bot ready. Logged in as {}. Total hook setup time: {:.2f} seconds", self.safe_user, time.perf_counter() - start_time)
 
             if client_id := self.config.discord.client_id:
-                logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=412317191168&scope=bot", client_id)
+                logger.info("Bot invite URL: https://discord.com/oauth2/authorize?client_id={}&permissions=412317191168&scope=bot", client_id)
 
         # Start periodic verification task
         self.loop.create_task(self._periodic_verification(DISCORD_REST_INTERVAL))
@@ -133,7 +131,7 @@ class LLMCordBot(commands.Bot):
         if not self._valid_trigger_message(message):
             return
 
-        logger.info("Message received. User: %s ID: %d", message.author.name, message.author.id)
+        logger.info("Message received. User: {} ID: {}", message.author.name, message.author.id)
 
         try:
             with timer("LLM payload preparation"):
@@ -146,14 +144,14 @@ class LLMCordBot(commands.Bot):
             if response_text.startswith("__STOP_RESPONSE__"):
                 _, reason = response_text.split("|")
 
-                logger.info("Response aborted by LLM. Reason: %s", reason)
+                logger.info("Response aborted by LLM. Reason: {}", reason)
                 return
 
             with timer("Discord response"):
                 response_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response, bot_name=self.safe_user.display_name)
                 await self.discord_service.send_response_chunks(message, response_text)
         except (httpx.RequestError, discord.DiscordException):
-            logger.exception("Failed to process message from %s", message.author.name)
+            logger.exception("Failed to process message from {}", message.author.name)
         finally:
             self.message_service.prune_msg_nodes()
 
@@ -184,16 +182,16 @@ class LLMCordBot(commands.Bot):
                         data = None
                     if data and str(data.get("id")) == str(self.safe_user.id):
                         return True
-                    logger.warning("Discord REST returned unexpected data or id mismatch: %s", data)
+                    logger.warning("Discord REST returned unexpected data or id mismatch: {}", data)
                     return False
-                logger.warning("Discord REST returned status %s on attempt %d", resp.status_code, attempt)
+                logger.warning("Discord REST returned status {} on attempt {}", resp.status_code, attempt)
             except httpx.RequestError:
-                logger.warning("Discord readiness check attempt %d failed", attempt)
+                logger.warning("Discord readiness check attempt {} failed", attempt)
 
             if attempt < retries:
                 await asyncio.sleep(backoff * attempt)
 
-        logger.warning("Discord REST verification failed after %d attempts", retries)
+        logger.warning("Discord REST verification failed after {} attempts", retries)
         return False
 
     async def _periodic_verification(self, interval: int) -> None:
@@ -273,7 +271,7 @@ class LLMCordBot(commands.Bot):
             return False
 
         if not self._is_message_allowed(message):
-            logger.info("Message blocked. User: %s ID: %d", message.author.name, message.author.id)
+            logger.info("Message blocked. User: {} ID: {}", message.author.name, message.author.id)
             return False
 
         return True
@@ -293,7 +291,7 @@ async def main() -> int:
     bot = LLMCordBot(intents=intents, activity=activity)
 
     threading.Thread(target=console_listener, args=(bot,), daemon=True).start()
-    logger.debug("Bot.py initialization finished in %.2f seconds!", time.perf_counter() - start_time)
+    logger.debug("Bot.py initialization finished in {:.2f} seconds!", time.perf_counter() - start_time)
 
     retry_delay = 5
     max_delay = 60
@@ -310,7 +308,7 @@ async def main() -> int:
             bot.exit_code = 1
             break
         except (discord.GatewayNotFound, aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.warning("Network error: %s. Retrying in %d seconds...", e, retry_delay)
+            logger.warning("Network error: {}. Retrying in {} seconds...", e, retry_delay)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
         except Exception:
@@ -343,7 +341,7 @@ def console_listener(bot: LLMCordBot) -> None:
                 bot.exit_code = 0
                 asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
                 break
-            logger.warning("Unknown command: %s", command)
+            logger.warning("Unknown command: {}", command)
     except EOFError:
         pass
     except Exception:

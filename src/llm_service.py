@@ -1,16 +1,15 @@
 import asyncio
 import json
-import logging
 import os
 from typing import Any, cast
 
 import httpx
 import litellm
+from loguru import logger
 
 from .llm_tools import tool_manager
 from .logging_utils_ import request_logger
 
-logger = logging.getLogger(__name__)
 os.environ["LITELLM_LOG"] = "ERROR"
 litellm.telemetry = False
 litellm.modify_params = True
@@ -40,20 +39,20 @@ class LLMService:
                 model_response = cast("Any", response)  # litellm types are incomplete
 
                 if not hasattr(model_response, "choices") or not model_response.choices:
-                    logger.debug("Iteration %d: No choices in response", i)
+                    logger.debug("Iteration {}: No choices in response", i)
                     continue
 
                 message = model_response.choices[0].message  # litellm types are incomplete
 
                 if hasattr(message, "tool_calls") and message.tool_calls:
-                    logger.debug("Iteration %d: LLM requested %d tool calls", i, len(message.tool_calls))
+                    logger.debug("Iteration {}: LLM requested {} tool calls", i, len(message.tool_calls))
                     params["messages"].append(message.model_dump())
 
                     results = await asyncio.gather(*(self._execute_tool(tc) for tc in message.tool_calls))
 
                     for res in results:
                         if res["content"].startswith("__STOP_RESPONSE__"):
-                            logger.debug("Iteration %d: Abort sentinel detected in tool results", i)
+                            logger.debug("Iteration {}: Abort sentinel detected in tool results", i)
                             return res["content"]
 
                     params["messages"].extend(results)
@@ -82,7 +81,7 @@ class LLMService:
             args = json.loads(args_str)
             content = await tool_manager.execute_tool(func_name, args)
         except (ValueError, json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning("Tool execution failed: %s. Error: %s", func_name, e)
+            logger.warning("Tool execution failed: {}. Error: {}", func_name, e)
             content = f"Error executing tool {func_name}: {e}"
 
         return {

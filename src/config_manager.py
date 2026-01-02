@@ -1,6 +1,5 @@
 """Configuration management module for the application."""
 
-import logging
 import sys
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Any, TypeAlias, TypeVar, cast, get_type_hints
 
 import yaml
 import yaml.representer
+from loguru import logger
 
 EDITABLE_SETTINGS = (
     "chat.max_text",
@@ -23,7 +23,7 @@ CONFIG_DIR = Path("config")
 CONFIG_FILE = CONFIG_DIR / "config.default.yaml"
 USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
-logger = logging.getLogger(__name__)
+
 ConfigValue: TypeAlias = str | int | bool | float | list[Any] | dict[str, Any] | None
 T = TypeVar("T")
 

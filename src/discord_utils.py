@@ -5,15 +5,13 @@ checking admin permissions, and managing message caches.
 """
 
 import asyncio
-import logging
 import time
 
 import discord
+from loguru import logger
 
 from .config_manager import config_manager
 from .custom_types import MessageCache, MessageList
-
-logger = logging.getLogger(__name__)
 
 DISCORD_API_TIMEOUT = 30.0
 
@@ -42,7 +40,7 @@ async def fetch_history(
     :param bot_user: The bot's user object.
     :return: A list of Discord messages.
     """
-    logger.debug("Fetching message history... (Mode: %s)", "Channel" if use_channel_context else "Reply Chain")
+    logger.debug("Fetching message history... (Mode: {})", "Channel" if use_channel_context else "Reply Chain")
     start_time = time.perf_counter()
 
     if use_channel_context:
@@ -51,7 +49,7 @@ async def fetch_history(
         message_history = await _fetch_reply_chain_history(message, max_messages, bot_user)
 
     elapsed_time = time.perf_counter() - start_time
-    logger.debug("Fetched history in %s seconds!", f"{elapsed_time:.4f}")
+    logger.debug("Fetched history in {:.4f} seconds!", elapsed_time)
 
     return message_history
 
@@ -73,7 +71,7 @@ async def _fetch_channel_history(
     try:
         history = await asyncio.wait_for(collect_history(), timeout=DISCORD_API_TIMEOUT)
     except asyncio.TimeoutError:
-        logger.warning("Timeout fetching channel history for message %s", message.id)
+        logger.warning("Timeout fetching channel history for message {}", message.id)
         history = []
 
     message_history = [message]
@@ -96,7 +94,7 @@ async def _fetch_reply_chain_history(
     try:
         local_cache: MessageCache = await asyncio.wait_for(collect_cache(message), timeout=DISCORD_API_TIMEOUT)
     except asyncio.TimeoutError:
-        logger.warning("Timeout fetching reply chain history for message %s", message.id)
+        logger.warning("Timeout fetching reply chain history for message {}", message.id)
         local_cache = {}
 
     message_history: MessageList = []
@@ -215,13 +213,13 @@ async def fetch_referenced_message(current_msg: discord.Message, force_id: int |
             try:
                 return await asyncio.wait_for(channel.parent.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.warning("Timeout fetching referenced message %s from parent channel", target_id)
+                logger.warning("Timeout fetching referenced message {} from parent channel", target_id)
                 return None
 
         try:
             return await asyncio.wait_for(channel.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
         except asyncio.TimeoutError:
-            logger.warning("Timeout fetching referenced message %s", target_id)
+            logger.warning("Timeout fetching referenced message {}", target_id)
             return None
     except (discord.NotFound, discord.HTTPException):
         return None

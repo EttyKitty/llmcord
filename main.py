@@ -4,12 +4,11 @@ This module acts as a runner that handles the main event loop, automatic restart
 """
 
 import asyncio
-import logging
 import time
 
-from src.bot import main
+from loguru import logger
 
-logger = logging.getLogger("runner")
+from src.bot import main
 
 # Configuration
 MAX_RETRIES = 2  # How many automatic restarts allowed
@@ -57,5 +56,5 @@ if __name__ == "__main__":
                 time.sleep(STABLE_THRESHOLD)
             retry_count = 0
         else:
-            logger.info("Restarting in %d seconds...", RESTART_DELAY)
+            logger.info("Restarting in {} seconds...", RESTART_DELAY)
             time.sleep(RESTART_DELAY)
