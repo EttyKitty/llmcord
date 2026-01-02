@@ -72,7 +72,7 @@ class LLMCordBot(commands.Bot):
         logger.debug("Bot init finished in {:.2f} seconds", time.perf_counter() - start_time)
 
         start_time = time.perf_counter()
-        self.httpx_client = httpx.AsyncClient()
+        self.httpx_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0))
         logger.debug("HTTPX client set in {:.2f} seconds", time.perf_counter() - start_time)
         self.exit_code: int = 0
 
