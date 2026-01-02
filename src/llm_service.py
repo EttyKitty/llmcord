@@ -50,6 +50,12 @@ class LLMService:
                     params["messages"].append(message.model_dump())
 
                     results = await asyncio.gather(*(self._execute_tool(tc) for tc in message.tool_calls))
+
+                    for res in results:
+                        if res["content"].startswith("__STOP_RESPONSE__"):
+                            logger.debug("Iteration %d: Abort sentinel detected in tool results", i)
+                            return res["content"]
+
                     params["messages"].extend(results)
                     continue
 
