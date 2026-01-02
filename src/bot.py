@@ -143,6 +143,12 @@ class LLMCordBot(commands.Bot):
                 async with message.channel.typing():
                     response_text = await self.llm_service.perform_completion(llm_payload)
 
+            if response_text.startswith("__STOP_RESPONSE__"):
+                _, reason = response_text.split("|")
+
+                logger.info("Response aborted by LLM. Reason: %s", reason)
+                return
+
             with timer("Discord response"):
                 response_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response, bot_name=self.safe_user.display_name)
                 await self.discord_service.send_response_chunks(message, response_text)

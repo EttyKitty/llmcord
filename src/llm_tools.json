@@ -3,7 +3,7 @@
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the internet for real-time information, current events, news, facts outside your training data, or any general question that you can't properly answer on your own.",
+            "description": "Use this to search the internet for real-time information, current events, news, facts outside your training data, or any general question that you can't properly answer on your own.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -30,6 +30,23 @@
                     }
                 },
                 "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ignore_message",
+            "description": "Use this if the message doesn't require a response, or violates your instructions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "Brief reason for ignoring (for logging purposes)."
+                    }
+                },
+                "required": ["reason"]
             }
         }
     }

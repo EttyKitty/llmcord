@@ -39,6 +39,8 @@ class ToolManager:
                 return await self.web_search(arguments.get("query", ""))
             if name == "open_link":
                 return await self.open_link(arguments.get("url", ""))
+            if name == "ignore_message":
+                return await self.ignore_message(arguments.get("reason", "No reason provided"))
         except Exception as e:
             logger.exception("Failed to execute tool %s", name)
             return f"Error executing tool: {e}"
@@ -170,5 +172,14 @@ class ToolManager:
             logger.exception("open_link: Unexpected error fetching URL: %s", url)
             return f"Error: Failed to fetch content - {e}"
 
+    @staticmethod
+    async def ignore_message(reason: str) -> str:
+        """Logic for ignoring a message.
+
+        Returns a sentinel string that the bot logic can intercept to
+        cancel the response.
+        """
+        logger.info("LLM decided to ignore message. Reason: %s", reason)
+        return f"__STOP_RESPONSE__|{reason}"
 
 tool_manager: ToolManager = ToolManager()
