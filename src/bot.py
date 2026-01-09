@@ -21,9 +21,9 @@ from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
 from .discord_service import DiscordService
 from .llm_service import LLMService
+from .logging_utils_ import timer
 from .message_service import MessageService
 from .regex_utils import process_response_text
-from .time_utils import timer
 
 DISCORD_REST_SUCCESS: Final[int] = 200
 DISCORD_REST_INTERVAL: Final[int] = 60
