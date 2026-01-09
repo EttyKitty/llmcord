@@ -62,7 +62,7 @@ Or local models with:
 - **Multi-Modal Support:** Handles images (Vision models) and text file attachments (.txt, .py, .c, etc.).
 - **Customizable Personality:** Pre-history prompt support with ⭐dynamic placeholders (like `{guild_name}` or `{user_roles}`).
 - **Identity Aware:** Natively uses the `name` API parameter for OpenAI/xAI. ⭐For other providers, the `prefix_users` option automatically prepends user IDs and Display Names to messages so the bot knows who is speaking.
-- **Flexible Model Switching:** Change the global model with `/model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/channelmodel`.
+- **Flexible Model Switching:** Change the global model with `/config model`, or ⭐assign specific models to specific channels (e.g., a coding model for #dev) using `/config channelmodel`.
 - **Efficient Caching:** Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls.
 - **Fully Asynchronous**
 - ⭐**Zero-Hassle Launcher:** Included `starter.bat` automatically creates a virtual environment, installs/updates dependencies, and handles auto-restarts.
@@ -70,7 +70,13 @@ Or local models with:
 - ⭐**Advanced Prompting:** Supports a `post_history_prompt` to inject instructions at the very end of the context, perfect for reinforcing formatting rules or jailbreaks.
 - ⭐**Clean Output:** Automatically strips `<think>` tags from reasoning models (like DeepSeek R1) and includes a `sanitize_response` option to convert smart typography to ASCII and collapse excessive whitespace.
 - ⭐**Multi-Modal Output Fix**: Mistral model `magistral` notably responds with a multi-modal list, that includes reasoning and text outputs. These responses are now properly accepted by llmcord, without errors.
-- ⭐**Hot Reloading:** Use `/reload` to reload `config.yaml` settings without restarting the bot.
+- ⭐**Hot Reloading:** Use `/config reload` to reload `config.yaml` settings without restarting the bot.
+- ⭐**LLM Tools:** The LLM has access to tools for enhanced capabilities:
+  - **web_search:** Perform internet searches using DuckDuckGo for real-time information.
+  - **open_link:** Fetch and extract the main content of web pages, with security measures to prevent access to localhost or private networks.
+  - **read_message_link:** Read a specific Discord message via its link, including surrounding context.
+  - **ignore_message:** Allow the LLM to ignore messages that don't require a response or violate instructions.
+- ⭐**Request Logging:** All LLM API requests are logged to `logs/llm_requests.json` with sensitive information redacted for debugging and monitoring purposes.
 
 
 ## Setting up and Running
@@ -91,6 +97,7 @@ Simply launch `starter.bat`. It will:
 2. Install/Update all dependencies automatically.
 3. Launch the bot (and auto-restart it if you reload configs).
 ```
+Additionally, when the bot is running, you can control it via console commands: type `reload` to reload the project without restarting, or `exit`, `stop`, or `quit` to stop the bot gracefully.
 
 **Using Docker:**
 ```bash
