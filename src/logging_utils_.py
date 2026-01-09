@@ -102,7 +102,13 @@ def setup_logging() -> None:
     """Configure Loguru to replace standard logging and handle colors/sinks."""
     logger.remove()
 
-    log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+    log_format = "<magenta>{time:YYYY-MM-DD HH:mm:ss}</magenta> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <white>{message}</white>"
+
+    logger.level("DEBUG", color="<white>")
+    logger.level("INFO", color="<green>")
+    logger.level("WARNING", color="<yellow>")
+    logger.level("ERROR", color="<light-red>")
+    logger.level("CRITICAL", color="<bold><red>")
 
     logger.add(sys.stderr, format=log_format, level="DEBUG", colorize=True)
 
