@@ -135,7 +135,7 @@ class LLMCordBot(commands.Bot):
 
         try:
             with timer("LLM payload preparation"):
-                llm_payload = await self.message_service.construct_llm_payload(message, self.safe_user)
+                llm_payload = await self.message_service.construct_llm_payload(message)
 
             with timer("LLM request"):
                 async with message.channel.typing():
