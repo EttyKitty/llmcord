@@ -11,7 +11,7 @@ from functools import lru_cache
 import discord
 from loguru import logger
 
-from .time_utils import time_performance
+from .logging_utils_ import time_performance
 
 REGEX_EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 REGEX_MULTI_SPACE = re.compile(r" {2,}")
