@@ -1,14 +1,12 @@
-"""Message Processor for handling Discord message operations.
+"""Module for handling message processing and payload construction.
 
-This module provides a service for processing Discord messages,
-including validation, response sending, and node management.
+This module provides functionality for constructing LLM payloads from Discord messages,
+handling attachments, and managing message nodes for conversation history.
 """
 
 import asyncio
-import os
 from base64 import b64encode
-from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any
 
 import discord
 import httpx
@@ -17,484 +15,243 @@ from discord import Message
 from litellm import utils as litellm_utils
 from loguru import logger
 
-from .config_manager import ConfigValue, RootConfig, config_manager
-from .custom_types import BuildMessagesParams, MessageNode, MessageNodeCache, MessagePayloadParams
+from .config_manager import RootConfig
+from .custom_types import MessageNode, MessagePayloadParams
 from .discord_utils import fetch_history
 from .llm_tools import tool_manager
 from .regex_utils import replace_placeholders, sanitize_symbols
-from .time_utils import time_performance
 
+# Constants
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
-MAX_MESSAGE_NODES: int = 500
+MAX_MESSAGE_NODES = 500
 
-config = config_manager.config
-os.environ["LITELLM_LOG"] = "ERROR"
-litellm.telemetry = False
-litellm.modify_params = True
+
+class AttachmentHandler:
+    """Handle logic for Discord attachments and embeds."""
+
+    @staticmethod
+    def get_text_content(msg: discord.Message) -> str:
+        """Extract text content from a Discord message including embeds and components.
+
+        :param msg: The Discord message to extract text from.
+        :return: Combined text content from message content, embeds, and components.
+        """
+        parts: list[str] = []
+        if msg.content.strip():
+            parts.append(msg.content.lstrip())
+
+        for e in msg.embeds:
+            parts.extend(filter(None, [e.title, e.description, getattr(e.footer, "text", None)]))
+
+        for c in msg.components:
+            if c.type == discord.ComponentType.text_display:
+                parts.extend(getattr(c, "content", ""))
+
+        return "\n".join(filter(None, parts))
+
+    @staticmethod
+    async def download(client: httpx.AsyncClient, attachment: discord.Attachment) -> bytes | None:
+        """Download the content of a Discord attachment.
+
+        :param client: HTTP client for making the download request.
+        :param attachment: The Discord attachment to download.
+        :return: Bytes content of the attachment or None if download fails.
+        """
+        try:
+            resp = await client.get(attachment.url, timeout=10.0)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to download {attachment.filename}: HTTP {e.response.status_code}")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to download {attachment.filename}: {e}")
+            return None
+        else:
+            return resp.content
 
 
 class MessageService:
-    """Service for processing Discord messages and managing responses."""
+    """Manage message processing and LLM payload construction.
+
+    This class handles the conversion of Discord messages into structured LLM payloads,
+    manages message nodes for conversation history, and processes attachments.
+    """
 
     def __init__(self, config: RootConfig, user: discord.ClientUser, httpx_client: httpx.AsyncClient) -> None:
-        """Initialize the message processor.
+        """Initialize the MessageService with configuration and dependencies.
 
-        :param config: The application configuration.
-        :param bot_user: The bot's user object.
+        :param config: Root configuration object.
+        :param user: The bot's Discord user object.
+        :param httpx_client: HTTP client for downloading attachments.
         """
         self.config = config
-        self.httpx_client = httpx_client
         self.user = user
+        self.httpx_client = httpx_client
         self.message_nodes: dict[int, MessageNode] = {}
 
     def prune_msg_nodes(self) -> None:
-        """Prune old message nodes to prevent memory leaks."""
-        if len(self.message_nodes) <= MAX_MESSAGE_NODES:
-            return
+        """Prune message nodes to maintain maximum capacity.
 
-        to_remove_count = len(self.message_nodes) - MAX_MESSAGE_NODES
-        logger.debug("Pruning {} old MsgNodes...", to_remove_count)
+        Efficiently remove oldest message nodes using dict insertion order (Python 3.7+).
+        """
+        while len(self.message_nodes) > MAX_MESSAGE_NODES:
+            # Pop the oldest item (first inserted)
+            self.message_nodes.pop(next(iter(self.message_nodes)))
 
-        sorted_ids = sorted(self.message_nodes.keys())
-        ids_to_delete = sorted_ids[:to_remove_count]
+    async def _ensure_node(self, msg: discord.Message) -> None:
+        """Ensure a message node exists and is fully initialized.
 
-        for msg_id in ids_to_delete:
-            self.message_nodes.pop(msg_id, None)
-
-        logger.debug("Successfully pruned {} nodes!", len(ids_to_delete))
-
-    async def _init_msg_node(self, msg: discord.Message) -> None:
-        """Initialize a MessageNode with granular debug logging."""
-        msg_id = msg.id
-        # start_time = time.perf_counter()
-
-        # logger.debug("[{}] Starting _init_msg_node", msg_id)
-        node = self.message_nodes.setdefault(msg_id, MessageNode())
-
+        :param msg: The Discord message to process and store.
+        """
+        node = self.message_nodes.setdefault(msg.id, MessageNode())
         if node.text is not None:
-            # logger.debug("[{}] Node already initialized, skipping", msg_id)
             return
-
-        # logger.debug("[{}] Attempting to acquire lock...", msg_id)
-        # lock_start = time.perf_counter()
 
         async with node.lock:
-            # logger.debug("[{}] Lock acquired in {:.4f}s", msg_id, time.perf_counter() - lock_start)
-
-            if node.text is not None:
-                # logger.debug("[{}] Node initialized by another task while waiting for lock", msg_id)
+            if node.text is not None:  # Double-check pattern
                 return
 
-            # 1. Text Extraction
-            # logger.debug("[{}] Extracting text from content/embeds/components", msg_id)
-            text_parts = [msg.content.lstrip()] if msg.content.lstrip() else []
-            text_parts.extend(get_embed_text(embed) for embed in msg.embeds)
-            text_parts.extend(get_component_text(c) for c in msg.components)
-
-            # 2. Attachment Handling
-            to_download = [a for a in msg.attachments if is_supported_attachment(a)]
-            if to_download:
-                # logger.debug("[{}] Found {} attachments to download", msg_id, len(to_download))
-                # download_start = time.perf_counter()
-
-                try:
-                    # This is the most likely place for a hang
-                    downloads = await asyncio.gather(*(download_attachment(self.httpx_client, a) for a in to_download))
-                    # logger.debug("[{}] Downloads completed in {:.4f}s", msg_id, time.perf_counter() - download_start)
-                except (httpx.HTTPError, httpx.TimeoutException, asyncio.TimeoutError):
-                    downloads = []
-            else:
-                downloads = []
-
-            # 3. Processing Results
-            # logger.debug("[{}] Processing {} download results", msg_id, len(downloads))
-            node.images = []
-            for attachment, resp in downloads:
-                if resp is None:
-                    # logger.warning("[{}] Failed download for attachment: {}", msg_id, attachment.filename)
-                    node.has_bad_attachments = True
-                    continue
-
-                content_type = attachment.content_type or ""
-                if content_type.startswith("text"):
-                    # Potential hang if file is massive
-                    # logger.debug("[{}] Reading text file: {}", msg_id, attachment.filename)
-                    text_parts.append(resp.text)
-                elif content_type.startswith("image"):
-                    # Potential hang (CPU bound) if image is massive
-                    # logger.debug("[{}] Encoding image: {}", msg_id, attachment.filename)
-                    base64_data = b64encode(resp.content).decode()
-                    node.images.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64_data}"}})
-
-            # 4. Metadata Assignment
-            # logger.debug("[{}] Finalizing node metadata", msg_id)
-            node.text = "\n".join(filter(None, text_parts))
+            # 1. Basic Metadata
+            node.text = AttachmentHandler.get_text_content(msg)
             node.role = "assistant" if msg.author == self.user else "user"
             node.user_id = msg.author.id
             node.created_at = msg.created_at
+            node.user_display_name = msg.author.display_name if not msg.guild else (msg.guild.get_member(msg.author.id) or msg.author).display_name
 
-            # Guild member resolution
-            author = msg.author
-            if msg.guild and not isinstance(author, discord.Member):
-                node.user_display_name = (msg.guild.get_member(author.id) or author).display_name
-            else:
-                node.user_display_name = author.display_name
+            # 2. Process Attachments
+            valid_attachments = [a for a in msg.attachments if self._is_supported(a)]
+            node.has_bad_attachments = len(msg.attachments) > len(valid_attachments)
 
-            node.has_bad_attachments |= len(msg.attachments) > len(to_download)
+            if not valid_attachments:
+                return
 
-        # logger.debug("[{}] _init_msg_node finished. Total time: {:.4f}s", msg_id, time.perf_counter() - start_time)
+            results = await asyncio.gather(*[AttachmentHandler.download(self.httpx_client, a) for a in valid_attachments])
 
-    @time_performance("Message nodes initialization")
-    async def _initialize_message_nodes(self, message_history: list[discord.Message]) -> None:
-        """Initialize message nodes for the message history.
+            node.images = []
+            for attachment, content in zip(valid_attachments, results, strict=True):
+                if content is None:
+                    node.has_bad_attachments = True
+                    continue
 
-        :param message_history: List of messages to process.
+                ctype = attachment.content_type or ""
+                if ctype.startswith("text"):
+                    node.text += f"\n{content.decode('utf-8', errors='ignore')}"
+                elif ctype.startswith("image"):
+                    b64 = b64encode(content).decode()
+                    node.images.append({"type": "image_url", "image_url": {"url": f"data:{ctype};base64,{b64}"}})
+
+    def _is_supported(self, a: discord.Attachment) -> bool:
+        """Check if an attachment type is supported for processing.
+
+        :param a: Discord attachment to check.
+        :return: True if the attachment is text or image type, False otherwise.
         """
-        tasks = [asyncio.wait_for(self._init_msg_node(msg), timeout=10.0) for msg in message_history]
+        return any(a.content_type.startswith(t) for t in ("text", "image")) if a.content_type else False
 
-        # return_exceptions=True ensures that if one message hangs/fails,
-        # the others still complete.
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def construct_llm_payload(self, message: discord.Message) -> dict[str, Any]:
+        """Construct the LLM payload from the given message."""
+        # 1. Context Resolution
+        provider, model = self._parse_model_str(message)
+        history = await self._fetch_history(message)
 
-        # Log failures for debugging
-        for i, result in enumerate(results):
-            if isinstance(result, asyncio.TimeoutError):
-                logger.warning("Message {} timed out during initialization (10s limit)", message_history[i].id)
-            elif isinstance(result, Exception):
-                logger.error("Message {} failed initialization: {}", message_history[i].id, result)
+        # 2. Node Syncing
+        await asyncio.gather(*[self._ensure_node(m) for m in history])
 
-    async def construct_llm_payload(
-        self,
-        message: discord.Message,
-        bot_user: discord.ClientUser,
-    ) -> dict[str, Any]:
-        """Prepare the LLM request parameters for a message.
+        # 3. Payload Construction
+        params = self._get_payload_params(provider, model)
+        messages = self._assemble_chat_history(history, params)
 
-        :param message: The Discord message to process.
-        :param bot_user: The bot's user object.
-        :return: Chat parameters for the LLM call.
+        # 4. Prompt Injection
+        messages = self._inject_system_prompts(messages, message, model, provider)
+
+        # 5. Model-Specific Config
+        return self._finalize_payload(messages, provider, model)
+
+    def _assemble_chat_history(self, history: list[Message], params: MessagePayloadParams) -> list[dict[str, Any]]:
+        """Assemble chat history into structured message format for LLM payload.
+
+        :param history: List of Discord messages in conversation history.
+        :param params: Parameters controlling message assembly behavior.
+        :return: List of message dictionaries in chronological order.
         """
-        provider, model = self._get_provider_and_model(message)
-        message_history = await self._prepare_message_history(message, bot_user)
-        await self._initialize_message_nodes(message_history)
+        payload: list[dict[str, Any]] = []
+        for msg in history:
+            node = self.message_nodes.get(msg.id)
+            if not node or not node.text:
+                continue
 
-        build_params = await self._create_build_parameters(message, message_history, self.message_nodes, model, provider, bot_user)
-        payload_params = self._create_payload_params(build_params)
-        content_messages = self._build_messages_payload(build_params.message_history, build_params.message_nodes, payload_params)
-        self._insert_prompts(build_params, content_messages)
-        messages_payload = self._trim_messages_if_needed(content_messages, build_params)
+            # Text Processing
+            text = node.text[: params.max_text]
+            if params.prefix_users and not params.accept_usernames and node.role in ("user", "assistant"):
+                text = f"[{node.created_at:%Y-%m-%d %H:%M}] {node.user_display_name}: {text}"
 
-        payload = self._create_chat_parameters(model, messages_payload, provider)
+            # Structure
+            content_data: str | list[dict[str, Any]]
+            content_data = [{"type": "text", "text": text}, *node.images[:params.max_images]] if params.accept_images and node.images else text
 
-        payload["tools"] = tool_manager.get_tool_definitions()
-        payload["tool_choice"] = "auto"
+            msg_dict: dict[str, Any] = {"role": node.role, "content": content_data}
+            if params.accept_usernames and node.role == "user":
+                msg_dict["name"] = sanitize_symbols(node.user_display_name or "")[:64]
 
-        return payload
+            payload.append(msg_dict)
 
-    async def _create_build_parameters(
-        self,
-        message: discord.Message,
-        message_history: list[discord.Message],
-        message_nodes: MessageNodeCache,
-        model: str,
-        provider: str,
-        bot_user: discord.ClientUser,
-    ) -> BuildMessagesParams:
-        """Create build parameters for message processing.
+        return payload[::-1]  # Chronological
 
-        :param message: The Discord message.
-        :param message_history: List of messages in the history.
-        :param message_nodes: Dictionary of message nodes.
-        :param model: The LLM model to use.
-        :param provider: The LLM provider.
-        :param bot_user: The bot's user object.
-        :return: BuildMessagesParams object.
+    def _finalize_payload(self, messages: list[dict[str, Any]], provider: str, model: str) -> dict[str, Any]:
+        """Finalize the LLM payload with model-specific configuration.
+
+        :param messages: List of message dictionaries for the conversation.
+        :param provider: The LLM provider name.
+        :param model: The specific model name.
+        :return: Complete payload dictionary ready for LLM API call.
         """
-        pre_history, post_history = self._generate_system_prompts(message, model, provider, bot_user)
-        return BuildMessagesParams(
-            message_history=message_history,
-            message_nodes=message_nodes,
-            pre_history=pre_history,
-            post_history=post_history,
-            model=model,
-            provider=provider,
-        )
+        config = self.config.llm.providers.get(provider, {})
+        full_model = f"{provider}/{model}"
 
-    def _create_chat_parameters(
-        self,
-        model: str,
-        messages_payload: list[dict[str, Any]],
-        provider: str,
-    ) -> dict[str, Any]:
-        """Create the final chat parameters for the LLM call.
+        # Trim tokens
+        trimmed_result = litellm_utils.trim_messages(messages, model=full_model, max_tokens=self.config.chat.max_input_tokens, trim_ratio=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        messages = trimmed_result if isinstance(trimmed_result, list) else messages  # pyright: ignore[reportUnknownVariableType]
 
-        :param model: The LLM model to use.
-        :param messages_payload: The processed messages payload.
-        :param provider: The LLM provider.
-        :return: Dictionary of chat parameters.
-        """
-        provider_config = self._get_provider_config(provider)
-        return build_chat_params(
-            model=model,
-            messages=messages_payload,
-            provider=provider,
-            provider_config=provider_config,
-            llm_models_config=self.config.llm.models,
-        )
+        return {
+            "model": full_model if provider in litellm.provider_list else f"openai/{model}",
+            "messages": messages,
+            "api_key": config.get("api_key") if isinstance(config, dict) else None,
+            "api_base": config.get("base_url") if isinstance(config, dict) else None,
+            "extra_body": (config.get("extra_body") or {}) | (config.get(full_model) or {}) if isinstance(config, dict) else {},
+            "extra_headers": config.get("extra_headers") if isinstance(config, dict) else None,
+            "tools": tool_manager.get_tool_definitions(),
+            "tool_choice": "auto",
+        }
 
-    async def _prepare_message_history(self, message: discord.Message, bot_user: discord.ClientUser) -> list[discord.Message]:
-        """Prepare the message history for context."""
-        config = self.config
-        use_channel_context = config.chat.use_channel_context
-        if use_channel_context and config.chat.force_reply_chains and message.reference:
-            use_channel_context = False
+    # --- Small Helpers ---
+    def _parse_model_str(self, msg: Message) -> tuple[str, str]:
+        raw = self.config.chat.channel_models.get(msg.channel.id, self.config.chat.default_model)
+        if "/" not in raw:
+            error = f"Invalid model string: {raw}"
+            raise ValueError(error)
+        provider, model = raw.removesuffix(":vision").split("/", 1)
+        return provider, model
 
-        return await fetch_history(
-            message=message,
-            max_messages=config.chat.max_messages,
-            use_channel_context=use_channel_context,
-            bot_user=bot_user,
-        )
+    async def _fetch_history(self, message: Message) -> list[Message]:
+        use_ctx = self.config.chat.use_channel_context
+        if use_ctx and self.config.chat.force_reply_chains and message.reference:
+            use_ctx = False
+        return await fetch_history(message, self.config.chat.max_messages, use_channel_context=use_ctx, bot_user=self.user)
 
-    def _generate_system_prompts(self, message: discord.Message, model: str, provider: str, bot_user: discord.ClientUser) -> tuple[str | None, str | None]:
-        """Generate system prompts."""
-        pre_history = replace_placeholders(self.config.prompts.pre_history, message, bot_user, model, provider)
-        post_history = replace_placeholders(self.config.prompts.post_history, message, bot_user, model, provider)
-        return pre_history, post_history
-
-    def _create_payload_params(self, build_params: BuildMessagesParams) -> MessagePayloadParams:
-        """Create payload parameters based on model capabilities."""
-        accept_images = litellm.supports_vision(build_params.model, custom_llm_provider=build_params.provider)
-        accept_usernames = self._provider_supports_usernames(build_params.provider)
-
+    def _get_payload_params(self, provider: str, model: str) -> MessagePayloadParams:
         return MessagePayloadParams(
             max_text=self.config.chat.max_text,
             max_images=self.config.chat.max_images,
             prefix_users=self.config.chat.prefix_users,
-            accept_images=accept_images,
-            accept_usernames=accept_usernames,
+            accept_images=litellm.supports_vision(model, custom_llm_provider=provider),
+            accept_usernames=any(provider.startswith(p) for p in PROVIDERS_SUPPORTING_USERNAMES),
         )
 
-    def _provider_supports_usernames(self, provider: str) -> bool:
-        """Check if provider supports usernames in messages."""
-        return any(provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
-
-    def _insert_prompts(
-        self,
-        build_params: BuildMessagesParams,
-        content_messages: list[dict[str, Any]],
-    ) -> None:
-        """Assemble the complete messages payload with system prompts."""
-        if build_params.pre_history:
-            content_messages.insert(0, {"role": "system", "content": build_params.pre_history})
-        if build_params.post_history:
-            content_messages.append({"role": "system", "content": build_params.post_history})
-
-    def _trim_messages_if_needed(
-        self,
-        messages_payload: list[dict[str, Any]],
-        build_params: BuildMessagesParams,
-    ) -> list[dict[str, Any]]:
-        """Trim messages payload if it exceeds token limit."""
-        full_model_name = f"{build_params.provider}/{build_params.model}"
-        trimmed_result = litellm_utils.trim_messages(  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
-            messages_payload,
-            model=full_model_name,
-            max_tokens=self.config.chat.max_input_tokens,
-        )
-        # Cast to expected type since litellm's annotations are incomplete
-        return cast("list[dict[str, Any]]", trimmed_result) if isinstance(trimmed_result, list) else messages_payload
-
-    def _get_provider_config(self, provider: str) -> ConfigValue:
-        """Get provider configuration."""
-        provider_config = self.config.llm.providers.get(provider)
-        if not provider_config:
-            error = f"Provider '{provider}' not found in configuration."
-            raise KeyError(error)
-        return provider_config
-
-    def _get_llm_provider_model(self, channel_id: int, channel_models: dict[int, str], default_model: str) -> tuple[str, str]:
-        """Resolve the LLM provider and model for a specific channel.
-
-        :param channel_id: The Discord channel ID that triggered the request.
-        :param channel_models: A dictionary mapping channel IDs to provider/model strings.
-        :param default_model: The default provider/model string to use as a fallback.
-        :return: A tuple containing (provider name, model name).
-        :raises ValueError: If the provider/model string does not contain a '/' separator.
-        """
-        provider_slash_model = channel_models.get(channel_id, default_model)
-
-        if "/" not in provider_slash_model:
-            error = f"Invalid model format: '{provider_slash_model}'. Expected 'provider/model'."
-            raise ValueError(error)
-
-        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-
-        return provider, model
-
-    def _get_provider_and_model(self, message: discord.Message) -> tuple[str, str]:
-        """Get the LLM provider and model for a message.
-
-        :param message: The Discord message.
-        :return: Tuple of (provider, model).
-        """
-        return self._get_llm_provider_model(
-            channel_id=message.channel.id,
-            channel_models=self.config.chat.channel_models,
-            default_model=self.config.chat.default_model,
-        )
-
-    def _build_messages_payload(self, message_history: list[Message], message_nodes: dict[int, MessageNode], params: MessagePayloadParams) -> list[dict[str, Any]]:
-        """Build the messages payload for the LLM.
-
-        :param message_history: The history of messages to process.
-        :param message_nodes: The dictionary of processed message nodes.
-        :param params: Parameters for payload creation.
-        :return: A list of messages for the payload.
-        """
-        messages_payload: list[dict[str, Any]] = []
-
-        for msg in message_history:
-            node = message_nodes.get(msg.id)
-            if not node or node.text is None:
-                logger.debug("Empty or missing message node found, skipping...")
-                continue
-
-            message_payload = create_message_payload(node=node, params=params)
-
-            if message_payload:
-                messages_payload.append(message_payload)
-
-        # Reverse to ensure chronological order (oldest first) for LLM context
-        return messages_payload[::-1]
-
-
-def get_embed_text(embed: discord.Embed) -> str:
-    """Extract text from an embed.
-
-    :param embed: The Discord embed to process.
-    :return: A string containing the title, description, and footer text.
-    """
-    fields: list[str | None] = [embed.title, embed.description, getattr(embed.footer, "text", None)]
-    return "\n".join(filter(None, fields))
-
-
-def get_component_text(component: discord.Component) -> str:
-    """Extract text from a component.
-
-    :param component: The Discord component to process.
-    :return: The text content if the component is a TextDisplay, otherwise an empty string.
-    """
-    return getattr(component, "content", "") if component.type == discord.ComponentType.text_display else ""
-
-
-def is_supported_attachment(attachment: discord.Attachment) -> bool:
-    """Check if attachment type is supported.
-
-    :param attachment: The Discord attachment to check.
-    :return: True if the attachment is a text or image file, False otherwise.
-    """
-    return any(attachment.content_type.startswith(t) for t in ("text", "image")) if attachment.content_type else False
-
-
-async def download_attachment(httpx_client: httpx.AsyncClient, attachment: discord.Attachment) -> tuple[discord.Attachment, httpx.Response | None]:
-    """Download a Discord attachment using the provided HTTP client.
-
-    :param httpx_client: The shared HTTPX client instance.
-    :param attachment: The Discord attachment to download.
-    :return: A tuple containing the original attachment and the HTTP response (or None if failed).
-    """
-    try:
-        resp = await httpx_client.get(attachment.url)
-        resp.raise_for_status()
-    except (httpx.HTTPError, httpx.TimeoutException) as error:
-        logger.warning("Failed to download attachment {} ({}): {}", attachment.filename, attachment.url, error)
-        return attachment, None
-    else:
-        return attachment, resp
-
-
-def build_chat_params(
-    model: str,
-    messages: Sequence[dict[str, Any]],
-    provider: str,
-    provider_config: ConfigValue,
-    llm_models_config: dict[str, ConfigValue],
-) -> dict[str, Any]:
-    """Construct the parameters for the Litellm completion call.
-
-    :param model: The model identifier.
-    :param messages: The list of message payloads.
-    :param provider: The provider identifier.
-    :param provider_config: The configuration dictionary for the provider.
-    :param llm_models_config: The dictionary of model-specific overrides.
-    :return: A dictionary of parameters for the API call.
-    :raises TypeError: If provider_config is not a dictionary.
-    """
-    if not isinstance(provider_config, dict):
-        error = f"Provider config must be a dict, got {type(provider_config)}"
-        raise TypeError(error)
-
-    raw_overrides = llm_models_config.get(f"{provider}/{model}")
-    model_overrides: dict[str, object] = raw_overrides if isinstance(raw_overrides, dict) else {}
-
-    extra_headers = provider_config.get("extra_headers")
-    extra_query = provider_config.get("extra_query")
-    raw_extra_body = provider_config.get("extra_body")
-    extra_body_base: dict[str, Any] = cast("dict[str, Any]", raw_extra_body) if isinstance(raw_extra_body, dict) else {}
-
-    # Merge provider-level extra_body with model-specific overrides
-    extra_body: dict[str, Any] = extra_body_base | model_overrides
-
-    return {
-        "model": f"{provider}/{model}",
-        "messages": messages,
-        "api_key": provider_config.get("api_key"),
-        "api_base": provider_config.get("base_url"),
-        "stream": False,
-        "extra_headers": extra_headers if isinstance(extra_headers, dict) else None,
-        "extra_query": extra_query if isinstance(extra_query, dict) else None,
-        "extra_body": extra_body,
-    }
-
-
-def create_message_payload(
-    node: MessageNode,
-    params: MessagePayloadParams,
-) -> dict[str, Any] | None:
-    """Create a single message payload from a MessageNode.
-
-    :param node: The message node to process.
-    :param params: Parameters for payload creation.
-    :return: The message payload or None if empty.
-    """
-    formatted_text = node.text[: params.max_text] if node.text else ""
-
-    if params.prefix_users and not params.accept_usernames and node.user_display_name and node.role in {"user", "assistant"}:
-        formatted_text = f"[{node.created_at:%Y-%m-%d %H:%M}] {node.user_display_name}({node.user_id}): {formatted_text}"
-
-    images_to_add: list[dict[str, Any]] = node.images[: params.max_images] if params.accept_images else []
-
-    content: str | list[dict[str, Any]]
-    if images_to_add:
-        parts: list[dict[str, Any]] = []
-        if formatted_text:
-            parts.append({"type": "text", "text": formatted_text})
-        parts.extend(images_to_add)
-        content = parts
-    else:
-        content = formatted_text
-
-    if not content:
-        return None
-
-    message_payload: dict[str, Any]
-    if node.role == "user":
-        user_payload: dict[str, Any] = {"role": "user", "content": content}
-        if params.accept_usernames and node.user_id:
-            user_payload["name"] = sanitize_symbols(node.user_display_name or "")[:64] or str(node.user_id)
-        message_payload = user_payload
-    else:
-        message_payload = {"role": "assistant", "content": formatted_text}
-
-    return message_payload
+    def _inject_system_prompts(self, messages: list[dict[str, Any]], msg: Message, model: str, provider: str) -> list[dict[str, Any]]:
+        pre = replace_placeholders(self.config.prompts.pre_history, msg, self.user, model, provider)
+        post = replace_placeholders(self.config.prompts.post_history, msg, self.user, model, provider)
+        if pre:
+            messages.insert(0, {"role": "system", "content": pre})
+        if post:
+            messages.append({"role": "system", "content": post})
+        return messages

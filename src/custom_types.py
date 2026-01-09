@@ -44,19 +44,6 @@ class MessagePayloadParams:
     accept_images: bool
     accept_usernames: bool
 
-
-@dataclass(frozen=True, slots=True)
-class BuildMessagesParams:
-    """Parameters for building messages payload."""
-
-    message_history: list[discord.Message]
-    message_nodes: dict[int, MessageNode]
-    pre_history: str | None
-    post_history: str | None
-    model: str
-    provider: str
-
-
 # Common type aliases for better readability and maintainability
 MessageCache = dict[int, discord.Message]
 MessageNodeCache = dict[int, MessageNode]
