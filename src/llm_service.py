@@ -31,8 +31,8 @@ class LLMService:
             params = chat_params.copy()
             params["messages"] = list(params["messages"])
 
-            request_logger.log(params)
             for i in range(5):
+                request_logger.log(params)
                 response = await litellm.acompletion(**params, timeout=180)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
 
                 model_response = cast("Any", response)  # litellm types are incomplete
