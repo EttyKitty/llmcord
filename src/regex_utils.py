@@ -88,8 +88,8 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or ""
 
     placeholders: dict[str, str] = {
-        "{date}": now.strftime("%B {} %Y"),
-        "{time}": now.strftime("%H:%M:{} %Z%z"),
+        "{date}": now.strftime("%B %d %Y"),
+        "{time}": now.strftime("%H:%M:%S %Z%z"),
         "{bot_name}": bot_user.display_name,
         "{bot_id}": str(bot_user.id),
         "{model}": model,
