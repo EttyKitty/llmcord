@@ -33,7 +33,7 @@ class LLMService:
 
             request_logger.log(params)
             for i in range(5):
-                response = await litellm.acompletion(**params, client=self.httpx_client, timeout=180)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
+                response = await litellm.acompletion(**params, timeout=180)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
 
                 model_response = cast("Any", response)  # litellm types are incomplete
 
