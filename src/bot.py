@@ -21,6 +21,7 @@ from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
 from .discord_service import DiscordService
 from .llm_service import LLMService
+from .llm_tools import tool_manager
 from .logging_utils_ import timer
 from .message_service import MessageService
 from .regex_utils import process_response_text
@@ -103,6 +104,7 @@ class LLMCordBot(commands.Bot):
         self.llm_service = LLMService(self.httpx_client)
         self.message_service = MessageService(config=self.config, user=self.safe_user, httpx_client=self.httpx_client)
         self.discord_service = DiscordService(config=self.config, message_nodes=self.message_service.message_nodes)
+        tool_manager.bind_client(self)
         logger.debug("Services initialized!")
 
         # Verify we can reach Discord's REST API and that the token/user are valid.

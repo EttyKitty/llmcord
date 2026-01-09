@@ -49,5 +49,26 @@
                 "required": ["reason"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_message_link",
+            "description": "Read a specific Discord message via its link (e.g., https://discord.com/channels/...). Fetches surrounding context as well.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "link": {
+                        "type": "string",
+                        "description": "The Discord message link."
+                    },
+                    "context_padding": {
+                        "type": "integer",
+                        "description": "Number of messages to retrieve around the target (default 10, max 50). Increase this if you need more context."
+                    }
+                },
+                "required": ["link"]
+            }
+        }
     }
 ]

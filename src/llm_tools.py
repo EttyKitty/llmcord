@@ -5,24 +5,33 @@ This module defines the tools available to the LLM and the logic to execute them
 
 import ipaddress
 import json
+import re
 import socket
 import urllib.parse
 from pathlib import Path
 from typing import Any, cast
 
+import discord
 import httpx
 import trafilatura
-from ddgs import (
-    DDGS,  # type: ignore[import-untyped] # DDGS library has incomplete type stubs, remove when fixed upstream
-)
+from ddgs import DDGS  # type: ignore[import-untyped]
 from loguru import logger
 
 MAX_CONTENT_SIZE = 500000
 TOOLS_PATH = Path(__file__).parent / "llm_tools.json"
-
+MSG_LINK_PATTERN = re.compile(r"channels/(?P<guild_id>\d+)/(?P<channel_id>\d+)/(?P<message_id>\d+)")
+GENERIC_ERROR = "Error: Unable to read the linked message. I may lack permissions, or the content is inaccessible."
+DEFAULT_CONTEXT_PADDING = 10
 
 class ToolManager:
     """Manages LLM tools and their execution."""
+
+    def __init__(self) -> None:
+        self.client: discord.Client | None = None
+
+    def bind_client(self, client: discord.Client) -> None:
+        """Bind the Discord client to the tool manager."""
+        self.client = client
 
     @staticmethod
     def get_tool_definitions() -> list[dict[str, Any]]:
@@ -34,11 +43,13 @@ class ToolManager:
         """Map a tool name to its Python implementation and execute it."""
         try:
             if name == "web_search":
-                return await self.web_search(arguments.get("query", ""))
+                return await self._web_search(arguments.get("query", ""))
             if name == "open_link":
-                return await self.open_link(arguments.get("url", ""))
+                return await self._open_link(arguments.get("url", ""))
             if name == "ignore_message":
-                return await self.ignore_message(arguments.get("reason", "No reason provided"))
+                return await self._ignore_message(arguments.get("reason", "No reason provided"))
+            if name == "read_message_link":
+                return await self._read_message_link(arguments.get("link", ""), arguments.get("context_padding", DEFAULT_CONTEXT_PADDING))
         except Exception as e:
             logger.exception("Failed to execute tool {}", name)
             return f"Error executing tool: {e}"
@@ -46,7 +57,7 @@ class ToolManager:
             return f"Error: Tool '{name}' not found."
 
     @staticmethod
-    async def web_search(query: str) -> str:
+    async def _web_search(query: str) -> str:
         """Perform a web search using DuckDuckGo."""
         if not query:
             return "Error: No query provided."
@@ -103,7 +114,7 @@ class ToolManager:
 
         return True
 
-    async def open_link(self, url: str) -> str:
+    async def _open_link(self, url: str) -> str:
         """Fetch and extract the main content of a web page with security measures."""
         if not url:
             logger.debug("open_link: No URL provided")
@@ -171,7 +182,7 @@ class ToolManager:
             return f"Error: Failed to fetch content - {e}"
 
     @staticmethod
-    async def ignore_message(reason: str) -> str:
+    async def _ignore_message(reason: str) -> str:
         """Logic for ignoring a message.
 
         Returns a sentinel string that the bot logic can intercept to
@@ -179,6 +190,60 @@ class ToolManager:
         """
         logger.info("LLM decided to ignore message. Reason: {}", reason)
         return f"__STOP_RESPONSE__|{reason}"
+
+    async def _read_message_link(self, link: str, context_padding: int) -> str:
+        """Fetch a message and its context from a Discord link."""
+        # A single, generic error for the LLM so it doesn't hallucinate fixes for permissions it doesn't have.
+
+        if not self.client:
+            logger.error("ToolManager: Discord client is not bound.")
+            return GENERIC_ERROR
+
+        match = MSG_LINK_PATTERN.search(link)
+        if not match:
+            logger.debug("ToolManager: Invalid link format received: {}", link)
+            return GENERIC_ERROR
+
+        data = match.groupdict()
+        channel_id = int(data["channel_id"])
+        msg_id = int(data["message_id"])
+
+        try:
+            # 1. Resolve Channel
+            channel = self.client.get_channel(channel_id)
+            if not channel:
+                channel = await self.client.fetch_channel(channel_id)
+
+            # 2. Validate Channel Type
+            if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
+                logger.debug("ToolManager: Unsupported channel type: {}", type(channel))
+                return GENERIC_ERROR
+
+            # 3. Fetch Target & Context
+            # We fetch the target first to ensure it exists
+            target_msg = await channel.fetch_message(msg_id)
+
+            # Fetch surrounding history (async generator -> list)
+            context_msgs = [msg async for msg in channel.history(around=target_msg, limit=context_padding)]
+            context_msgs.sort(key=lambda m: m.created_at)
+
+            # 4. Format Output
+            output = [f"**Context for linked message in #{channel.name}:**\n"]
+            for msg in context_msgs:
+                marker = " (TARGET)" if msg.id == msg_id else ""
+                content = msg.content or "[Attachment/Embed]"
+                output.append(f"{marker}[{msg.created_at:%Y-%m-%d %H:%M}] {msg.author.display_name}({msg.author.id}): {content}")
+
+            return "\n".join(output)
+
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            # Catch-all for Discord API errors (Permissions, Deleted messages, Unknown channels)
+            logger.warning("ToolManager: Failed to fetch message link '{}'. Reason: {}", link, e)
+            return GENERIC_ERROR
+        except Exception:
+            # Catch-all for unexpected logic errors
+            logger.exception("ToolManager: Unexpected error parsing message link '{}'", link)
+            return GENERIC_ERROR
 
 
 tool_manager: ToolManager = ToolManager()
