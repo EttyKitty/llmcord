@@ -183,7 +183,7 @@ class MessageService:
             # Text Processing
             text = node.text[: params.max_text]
             if params.prefix_users and not params.accept_usernames and node.role in ("user", "assistant"):
-                text = f"[{node.created_at:%Y-%m-%d %H:%M}] {node.user_display_name}: {text}"
+                text = f"[{node.created_at:%Y-%m-%d %H:%M}] {node.user_display_name}({node.user_id}): {text}"
 
             # Structure
             content_data: str | list[dict[str, Any]]
