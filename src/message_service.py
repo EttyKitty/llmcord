@@ -5,6 +5,7 @@ handling attachments, and managing message nodes for conversation history.
 """
 
 import asyncio
+import json
 from base64 import b64encode
 from typing import Any
 
@@ -151,14 +152,14 @@ class MessageService:
     async def construct_llm_payload(self, message: discord.Message) -> dict[str, Any]:
         """Construct the LLM payload from the given message."""
         # 1. Context Resolution
-        provider, model = self._parse_model_str(message)
+        provider, model, vision = self._parse_model_str(message)
         history = await self._fetch_history(message)
 
         # 2. Node Syncing
         await asyncio.gather(*[self._ensure_node(m) for m in history])
 
         # 3. Payload Construction
-        params = self._get_payload_params(provider, model)
+        params = self._get_payload_params(provider, model, force_vision=vision)
         messages = self._assemble_chat_history(history, params)
 
         # 4. Prompt Injection
@@ -187,7 +188,7 @@ class MessageService:
 
             # Structure
             content_data: str | list[dict[str, Any]]
-            content_data = [{"type": "text", "text": text}, *node.images[:params.max_images]] if params.accept_images and node.images else text
+            content_data = [{"type": "text", "text": text}, *node.images[: params.max_images]] if params.accept_images and node.images else text
 
             msg_dict: dict[str, Any] = {"role": node.role, "content": content_data}
             if params.accept_usernames and node.role == "user":
@@ -205,32 +206,53 @@ class MessageService:
         :param model: The specific model name.
         :return: Complete payload dictionary ready for LLM API call.
         """
-        config = self.config.llm.providers.get(provider, {})
+        provider_config = self.config.llm.providers.get(provider, {})
         full_model = f"{provider}/{model}"
+        model_config = self.config.llm.models.get(full_model, {})
+
+        tools = []
+        tool_overhead = 0
+
+        if litellm.supports_function_calling(model=full_model) and self.config.chat.use_tools:
+            tools = tool_manager.get_tool_definitions()
+            tool_string = json.dumps(tools)
+            tool_overhead = (len(tool_string) // 3) + 100
+
+        effective_max_tokens = max(0, self.config.chat.max_input_tokens - tool_overhead)
 
         # Trim tokens
-        trimmed_result = litellm_utils.trim_messages(messages, model=full_model, max_tokens=self.config.chat.max_input_tokens, trim_ratio=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        trimmed_result = litellm_utils.trim_messages(messages, model=full_model, max_tokens=effective_max_tokens, trim_ratio=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         messages = trimmed_result if isinstance(trimmed_result, list) else messages  # pyright: ignore[reportUnknownVariableType]
 
-        return {
+        payload: dict[str, Any] = {
             "model": full_model if provider in litellm.provider_list else f"openai/{model}",
             "messages": messages,
-            "api_key": config.get("api_key") if isinstance(config, dict) else None,
-            "api_base": config.get("base_url") if isinstance(config, dict) else None,
-            "extra_body": (config.get("extra_body") or {}) | (config.get(full_model) or {}) if isinstance(config, dict) else {},
-            "extra_headers": config.get("extra_headers") if isinstance(config, dict) else None,
-            "tools": tool_manager.get_tool_definitions(),
-            "tool_choice": "auto",
+            "api_key": provider_config.get("api_key") if isinstance(provider_config, dict) else None,
+            "api_base": provider_config.get("base_url") if isinstance(provider_config, dict) else None,
+            "extra_body": model_config.get("extra_body") if isinstance(model_config, dict) else None,
+            "extra_headers": model_config.get("extra_headers") if isinstance(model_config, dict) else None,
         }
 
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        return payload
+
     # --- Small Helpers ---
-    def _parse_model_str(self, msg: Message) -> tuple[str, str]:
+    def _parse_model_str(self, msg: Message) -> tuple[str, str, bool]:
+        """Parse the model string into provider, model, and vision override flag."""
         raw = self.config.chat.channel_models.get(msg.channel.id, self.config.chat.default_model)
-        if "/" not in raw:
+
+        has_vision_override = raw.endswith(":vision")
+        clean_raw = raw.removesuffix(":vision")
+
+        if "/" not in clean_raw:
             error = f"Invalid model string: {raw}"
             raise ValueError(error)
-        provider, model = raw.removesuffix(":vision").split("/", 1)
-        return provider, model
+
+        provider, model = clean_raw.split("/", 1)
+        return provider, model, has_vision_override
 
     async def _fetch_history(self, message: Message) -> list[Message]:
         use_ctx = self.config.chat.use_channel_context
@@ -238,12 +260,12 @@ class MessageService:
             use_ctx = False
         return await fetch_history(message, self.config.chat.max_messages, use_channel_context=use_ctx, bot_user=self.user)
 
-    def _get_payload_params(self, provider: str, model: str) -> MessagePayloadParams:
+    def _get_payload_params(self, provider: str, model: str, *, force_vision: bool) -> MessagePayloadParams:
         return MessagePayloadParams(
             max_text=self.config.chat.max_text,
             max_images=self.config.chat.max_images,
             prefix_users=self.config.chat.prefix_users,
-            accept_images=litellm.supports_vision(model, custom_llm_provider=provider),
+            accept_images=force_vision or litellm.supports_vision(model, custom_llm_provider=provider),
             accept_usernames=any(provider.startswith(p) for p in PROVIDERS_SUPPORTING_USERNAMES),
         )
 
