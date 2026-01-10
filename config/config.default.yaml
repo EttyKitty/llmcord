@@ -65,6 +65,8 @@ chat:
   # This converts 'smart' typography to standard ASCII characters, and collapses excessive whitespace/newlines.
   sanitize_response: false
 
+  use_tools: true
+
 llm:
   # Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry.
   # Only supports OpenAI compatible APIs.
@@ -110,14 +112,16 @@ llm:
   # As soon as you add `models` to your `config.yaml`, the model below will be excluded from your lists.
   models:
     exampleprovider/example-model-name:
-      temperature: 1
-      top_p: 1
-      top_k: 0
-      frequency_penalty: 0
-      presence_penalty: 0
-      max_tokens: 0
-      n: 0
-      reasoning_effort: auto
+      extra_body:
+        temperature: 1
+        top_p: 1
+        top_k: 0
+        frequency_penalty: 0
+        presence_penalty: 0
+        max_tokens: 0
+        n: 0
+        reasoning_effort: auto
+      extra_headers:
 
 prompts:
   # Write anything you want to customize the bot's behavior!

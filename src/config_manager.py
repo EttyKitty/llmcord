@@ -18,6 +18,7 @@ EDITABLE_SETTINGS = (
     "chat.force_reply_chains",
     "chat.max_input_tokens",
     "chat.prefix_users",
+    "chat.use_tools",
 )
 CONFIG_DIR = Path("config")
 CONFIG_FILE = CONFIG_DIR / "config.default.yaml"
@@ -59,6 +60,7 @@ class ChatConfig:
     max_images: int = 0
     max_messages: int = 0
     max_input_tokens: int = 0
+    use_tools: bool = True
 
 
 @dataclass
