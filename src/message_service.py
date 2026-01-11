@@ -7,7 +7,8 @@ handling attachments, and managing message nodes for conversation history.
 import asyncio
 import json
 from base64 import b64encode
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import discord
 import httpx
@@ -17,7 +18,6 @@ from litellm import utils as litellm_utils
 from loguru import logger
 
 from .config_manager import RootConfig, config_manager
-from .custom_types import MessageNode, MessagePayloadParams
 from .discord_utils import fetch_history
 from .llm_tools import get_tool_definitions
 from .regex_utils import replace_placeholders, sanitize_symbols
@@ -25,6 +25,47 @@ from .regex_utils import replace_placeholders, sanitize_symbols
 # Constants
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 MAX_MESSAGE_NODES = 500
+
+
+@dataclass(frozen=True, slots=True)
+class MessagePayloadParams:
+    """Parameters for message payload creation."""
+
+    max_text: int
+    max_images: int
+    prefix_users: bool
+    accept_images: bool
+    accept_usernames: bool
+
+
+@dataclass
+class MessageNode:
+    """Represents a single message node in the conversation history.
+
+    :param text: The text content of the message.
+    :param images: A list of image content parts for OpenAI API.
+    :param role: The role of the message sender ('user' or 'assistant').
+    :param user_id: The Discord user ID of the sender.
+    :param user_display_name: The display name of the sender.
+    :param has_bad_attachments: Indicates if the message had unsupported attachments.
+    :param lock: An async lock to manage concurrent access to this node.
+    """
+
+    created_at: discord.datetime | None = None
+
+    text: str | None = None
+    images: list[dict[str, Any]] = field(default_factory=list)  # type: ignore[assignment] # dataclasses field() has incomplete type stubs, remove when fixed upstream
+
+    role: Literal["user", "assistant"] = "assistant"
+    user_id: int | None = None
+    user_display_name: str | None = None
+
+    has_bad_attachments: bool = False
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+MessageNodeCache = dict[int, MessageNode]
 
 
 class MessageService:
@@ -51,7 +92,7 @@ class MessageService:
         """
         self.user = user
         self.httpx_client = httpx_client
-        self.message_nodes: dict[int, MessageNode] = {}
+        self.message_nodes: MessageNodeCache = {}
 
     def prune_msg_nodes(self) -> None:
         """Prune message nodes to maintain maximum capacity.
