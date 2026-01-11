@@ -20,7 +20,7 @@ from loguru import logger
 from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
 from .discord_utils import send_response_chunks
-from .llm_service import perform_completion
+from .llm_utils import perform_completion
 from .logging_utils_ import timer
 from .message_service import MessageService
 from .regex_utils import process_response_text

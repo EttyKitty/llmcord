@@ -11,11 +11,9 @@ import discord
 from loguru import logger
 
 from .config_manager import config_manager
-from .custom_types import MessageCache, MessageList
 
 DISCORD_API_TIMEOUT = 30.0
 DISCORD_CHAR_LIMIT: int = 2000
-
 
 async def send_response_chunks(trigger_msg: discord.Message, content: str) -> list[discord.Message]:
     """Send response content in chunks to Discord.
@@ -76,7 +74,7 @@ async def fetch_history(
     *,
     use_channel_context: bool,
     bot_user: discord.ClientUser,
-) -> MessageList:
+) -> list[discord.Message]:
     """Retrieve message history efficiently using a local cache to avoid rate limits.
 
     :param message: The trigger message.
@@ -102,7 +100,7 @@ async def fetch_history(
 async def _fetch_channel_history(
     message: discord.Message,
     max_messages: int,
-) -> MessageList:
+) -> list[discord.Message]:
     """Fetch message history using channel context mode.
 
     :param message: The trigger message.
@@ -110,7 +108,7 @@ async def _fetch_channel_history(
     :return: A list of Discord messages.
     """
 
-    async def collect_history() -> MessageList:
+    async def collect_history() -> list[discord.Message]:
         return [msg async for msg in message.channel.history(limit=max_messages - 1, before=message)]
 
     try:
@@ -128,7 +126,7 @@ async def _fetch_reply_chain_history(
     message: discord.Message,
     max_messages: int,
     bot_user: discord.ClientUser,
-) -> MessageList:
+) -> list[discord.Message]:
     """Fetch message history using reply chain mode.
 
     :param message: The trigger message.
@@ -137,12 +135,12 @@ async def _fetch_reply_chain_history(
     :return: A list of Discord messages.
     """
     try:
-        local_cache: MessageCache = await asyncio.wait_for(_collect_cache(message), timeout=DISCORD_API_TIMEOUT)
+        local_cache: dict[int, discord.Message] = await asyncio.wait_for(_collect_cache(message), timeout=DISCORD_API_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Timeout fetching reply chain history for message {}", message.id)
         local_cache = {}
 
-    message_history: MessageList = []
+    message_history: list[discord.Message] = []
     history_ids: set[int] = set()
     current_msg: discord.Message | None = message
 
@@ -156,7 +154,7 @@ async def _fetch_reply_chain_history(
     return message_history
 
 
-async def _collect_cache(message: discord.Message) -> MessageCache:
+async def _collect_cache(message: discord.Message) -> dict[int, discord.Message]:
     """Collect a cache of recent messages before the given message.
 
     :param message: The Discord message to collect history before.
@@ -167,7 +165,7 @@ async def _collect_cache(message: discord.Message) -> MessageCache:
 
 async def _get_next_message_in_chain(
     current_msg: discord.Message,
-    local_cache: MessageCache,
+    local_cache: dict[int, discord.Message],
     bot_user: discord.ClientUser,
 ) -> discord.Message | None:
     """Get the next message in the reply chain.
@@ -212,7 +210,7 @@ def _is_thread_starter_message(message: discord.Message) -> bool:
 
 def _find_previous_message_by_author(
     current_msg: discord.Message,
-    local_cache: MessageCache,
+    local_cache: dict[int, discord.Message],
     bot_user: discord.ClientUser,
 ) -> discord.Message | None:
     """Find the most recent previous message by the same author.
