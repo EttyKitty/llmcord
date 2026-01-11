@@ -19,56 +19,12 @@ from loguru import logger
 from .config_manager import RootConfig, config_manager
 from .custom_types import MessageNode, MessagePayloadParams
 from .discord_utils import fetch_history
-from .llm_tools import tool_manager
+from .llm_tools import get_tool_definitions
 from .regex_utils import replace_placeholders, sanitize_symbols
 
 # Constants
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 MAX_MESSAGE_NODES = 500
-
-
-class AttachmentHandler:
-    """Handle logic for Discord attachments and embeds."""
-
-    @staticmethod
-    def get_text_content(msg: discord.Message) -> str:
-        """Extract text content from a Discord message including embeds and components.
-
-        :param msg: The Discord message to extract text from.
-        :return: Combined text content from message content, embeds, and components.
-        """
-        parts: list[str] = []
-        if msg.content.strip():
-            parts.append(msg.content.lstrip())
-
-        for e in msg.embeds:
-            parts.extend(filter(None, [e.title, e.description, getattr(e.footer, "text", None)]))
-
-        for c in msg.components:
-            if c.type == discord.ComponentType.text_display:
-                parts.extend(getattr(c, "content", ""))
-
-        return "\n".join(filter(None, parts))
-
-    @staticmethod
-    async def download(client: httpx.AsyncClient, attachment: discord.Attachment) -> bytes | None:
-        """Download the content of a Discord attachment.
-
-        :param client: HTTP client for making the download request.
-        :param attachment: The Discord attachment to download.
-        :return: Bytes content of the attachment or None if download fails.
-        """
-        try:
-            resp = await client.get(attachment.url, timeout=10.0)
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"Failed to download {attachment.filename}: HTTP {e.response.status_code}")
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to download {attachment.filename}: {e}")
-            return None
-        else:
-            return resp.content
 
 
 class MessageService:
@@ -120,7 +76,7 @@ class MessageService:
                 return
 
             # 1. Basic Metadata
-            node.text = AttachmentHandler.get_text_content(msg)
+            node.text = self._get_text_content(msg)
             node.role = "assistant" if msg.author == self.user else "user"
             node.user_id = msg.author.id
             node.created_at = msg.created_at
@@ -133,7 +89,7 @@ class MessageService:
             if not valid_attachments:
                 return
 
-            results = await asyncio.gather(*[AttachmentHandler.download(self.httpx_client, a) for a in valid_attachments])
+            results = await asyncio.gather(*[self._download_attachment(self.httpx_client, a) for a in valid_attachments])
 
             node.images = []
             for attachment, content in zip(valid_attachments, results, strict=True):
@@ -221,7 +177,7 @@ class MessageService:
         tool_overhead = 0
 
         if litellm.supports_function_calling(model=full_model) and self.config.chat.use_tools:
-            tools = tool_manager.get_tool_definitions()
+            tools = get_tool_definitions()
             tool_string = json.dumps(tools)
             tool_overhead = (len(tool_string) // 3) + 100
 
@@ -284,3 +240,43 @@ class MessageService:
         if post:
             messages.append({"role": "system", "content": post})
         return messages
+
+    @staticmethod
+    def _get_text_content(msg: discord.Message) -> str:
+        """Extract text content from a Discord message including embeds and components.
+
+        :param msg: The Discord message to extract text from.
+        :return: Combined text content from message content, embeds, and components.
+        """
+        parts: list[str] = []
+        if msg.content.strip():
+            parts.append(msg.content.lstrip())
+
+        for e in msg.embeds:
+            parts.extend(filter(None, [e.title, e.description, getattr(e.footer, "text", None)]))
+
+        for c in msg.components:
+            if c.type == discord.ComponentType.text_display:
+                parts.extend(getattr(c, "content", ""))
+
+        return "\n".join(filter(None, parts))
+
+    @staticmethod
+    async def _download_attachment(client: httpx.AsyncClient, attachment: discord.Attachment) -> bytes | None:
+        """Download the content of a Discord attachment.
+
+        :param client: HTTP client for making the download request.
+        :param attachment: The Discord attachment to download.
+        :return: Bytes content of the attachment or None if download fails.
+        """
+        try:
+            resp = await client.get(attachment.url, timeout=10.0)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Failed to download {attachment.filename}: HTTP {e.response.status_code}")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to download {attachment.filename}: {e}")
+            return None
+        else:
+            return resp.content

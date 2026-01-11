@@ -19,9 +19,8 @@ from loguru import logger
 
 from .commands_manager import setup_commands
 from .config_manager import RootConfig, config_manager
-from .discord_service import DiscordService
-from .llm_service import LLMService
-from .llm_tools import tool_manager
+from .discord_utils import send_response_chunks
+from .llm_service import perform_completion
 from .logging_utils_ import timer
 from .message_service import MessageService
 from .regex_utils import process_response_text
@@ -78,9 +77,7 @@ class LLMCordBot(commands.Bot):
         self.exit_code: int = 0
 
         # Initialize services after bot is ready
-        self.llm_service: LLMService | None = None
         self.message_service: MessageService | None = None
-        self.discord_service: DiscordService | None = None
 
     async def close(self) -> None:
         """Cleanup resources before shutting down."""
@@ -101,10 +98,7 @@ class LLMCordBot(commands.Bot):
 
         # Initialize services now that bot user is available
         logger.debug("Initializing services...")
-        self.llm_service = LLMService(self.httpx_client)
         self.message_service = MessageService(user=self.safe_user, httpx_client=self.httpx_client)
-        self.discord_service = DiscordService(message_nodes=self.message_service.message_nodes)
-        tool_manager.bind_client(self)
         logger.debug("Services initialized!")
 
         # Verify we can reach Discord's REST API and that the token/user are valid.
@@ -126,7 +120,7 @@ class LLMCordBot(commands.Bot):
 
         :param message: The incoming Discord message to process.
         """
-        if not self.message_service or not self.llm_service or not self.discord_service:
+        if not self.message_service:
             logger.warning("Services not initialized yet")
             return
 
@@ -141,7 +135,7 @@ class LLMCordBot(commands.Bot):
 
             with timer("LLM request"):
                 async with message.channel.typing():
-                    response_text = await self.llm_service.perform_completion(llm_payload)
+                    response_text = await perform_completion(llm_payload, self)
 
             if response_text.startswith("__STOP_RESPONSE__"):
                 _, reason = response_text.split("|")
@@ -151,7 +145,7 @@ class LLMCordBot(commands.Bot):
 
             with timer("Discord response"):
                 response_text = process_response_text(response_text, sanitize=self.config.chat.sanitize_response, bot_name=self.safe_user.display_name)
-                await self.discord_service.send_response_chunks(message, response_text)
+                await send_response_chunks(message, response_text)
         except (httpx.RequestError, discord.DiscordException):
             logger.exception("Failed to process message from {}", message.author.name)
         finally:

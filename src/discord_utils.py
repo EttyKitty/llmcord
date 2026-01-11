@@ -14,6 +14,51 @@ from .config_manager import config_manager
 from .custom_types import MessageCache, MessageList
 
 DISCORD_API_TIMEOUT = 30.0
+DISCORD_CHAR_LIMIT: int = 2000
+
+
+async def send_response_chunks(trigger_msg: discord.Message, content: str) -> list[discord.Message]:
+    """Send response content in chunks to Discord.
+
+    :param trigger_msg: The triggering message.
+    :param content: The full response content.
+    :return: List of sent messages.
+    """
+    msgs: list[discord.Message] = []
+
+    if not content:
+        logger.warning("Discord service received no text!")
+        return msgs
+
+    remaining_text = content
+
+    while remaining_text:
+        if len(remaining_text) <= DISCORD_CHAR_LIMIT:
+            chunk = remaining_text.strip()
+            remaining_text = ""
+        else:
+            # Try to split at the last newline within the limit
+            split_index = remaining_text.rfind("\n", 0, DISCORD_CHAR_LIMIT)
+            # If no newline, try to split at the last space
+            if split_index == -1:
+                split_index = remaining_text.rfind(" ", 0, DISCORD_CHAR_LIMIT)
+            # If no space, hard split at the limit
+            if split_index == -1:
+                split_index = DISCORD_CHAR_LIMIT
+
+            chunk = remaining_text[:split_index].strip()
+            remaining_text = remaining_text[split_index:].strip()
+
+        if not chunk:
+            continue
+
+        target: discord.Message = msgs[-1] if msgs else trigger_msg
+        new_msg: discord.Message = await target.reply(content=chunk, silent=True)
+        msgs.append(new_msg)
+
+    logger.info("Response sent!")
+
+    return msgs
 
 
 def is_admin(user_id: int) -> bool:
@@ -92,7 +137,7 @@ async def _fetch_reply_chain_history(
     :return: A list of Discord messages.
     """
     try:
-        local_cache: MessageCache = await asyncio.wait_for(collect_cache(message), timeout=DISCORD_API_TIMEOUT)
+        local_cache: MessageCache = await asyncio.wait_for(_collect_cache(message), timeout=DISCORD_API_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Timeout fetching reply chain history for message {}", message.id)
         local_cache = {}
@@ -111,7 +156,7 @@ async def _fetch_reply_chain_history(
     return message_history
 
 
-async def collect_cache(message: discord.Message) -> MessageCache:
+async def _collect_cache(message: discord.Message) -> MessageCache:
     """Collect a cache of recent messages before the given message.
 
     :param message: The Discord message to collect history before.
@@ -139,14 +184,14 @@ async def _get_next_message_in_chain(
             starter_msg = thread.starter_message
             if starter_msg:
                 return starter_msg
-            return await fetch_referenced_message(current_msg, force_id=thread.id)
+            return await _fetch_referenced_message(current_msg, force_id=thread.id)
 
     # Try to resolve via Reply Reference
     if current_msg.reference and current_msg.reference.message_id:
         ref_id = current_msg.reference.message_id
         if ref_id in local_cache:
             return local_cache[ref_id]
-        return await fetch_referenced_message(current_msg)
+        return await _fetch_referenced_message(current_msg)
 
     # Fallback to "Previous Message" logic (if no reply and not mentioned)
     if bot_user.mention not in current_msg.content:
@@ -191,7 +236,7 @@ def _find_previous_message_by_author(
     return None
 
 
-async def fetch_referenced_message(current_msg: discord.Message, force_id: int | None = None) -> discord.Message | None:
+async def _fetch_referenced_message(current_msg: discord.Message, force_id: int | None = None) -> discord.Message | None:
     """Fetch a specific referenced message, prioritizing cache.
 
     :param current_msg: The message containing the reference.
