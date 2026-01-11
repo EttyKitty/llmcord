@@ -9,12 +9,20 @@ from discord.app_commands import Choice
 from discord.ext import commands
 from loguru import logger
 
-from .config_manager import EDITABLE_SETTINGS, config_manager
+from .config_manager import EDITABLE_SETTINGS, RootConfig, config_manager
 from .discord_utils import is_admin
 
 
 class ConfigurationCog(commands.Cog):
     """Cog for handling bot configuration commands."""
+
+    @property
+    def config(self) -> RootConfig:
+        """Get the current configuration.
+
+        :return: The root configuration object.
+        """
+        return config_manager.config
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initialize the ConfigurationCog.
@@ -39,8 +47,8 @@ class ConfigurationCog(commands.Cog):
     @config_model.autocomplete("model")
     async def model_autocomplete(self, _interaction: discord.Interaction, current: str) -> list[Choice[str]]:
         """Autocomplete for model selection."""
-        default_model = config_manager.config.chat.default_model
-        models = config_manager.config.llm.models
+        default_model = self.config.chat.default_model
+        models = self.config.llm.models
 
         choices = [Choice(name=f"◉ {default_model} (current default)", value=default_model)] if current.lower() in default_model.lower() else []
         choices += [Choice(name=f"○ {model}", value=model) for model in models if model != default_model and current.lower() in model.lower()]
@@ -83,15 +91,15 @@ class ConfigurationCog(commands.Cog):
     @config_channel_model.autocomplete("model")
     async def config_channel_model_autocomplete(self, interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
         """Autocomplete for channel model selection."""
-        default_model = config_manager.config.chat.default_model
-        channel_models = config_manager.config.chat.channel_models
+        default_model = self.config.chat.default_model
+        channel_models = self.config.chat.channel_models
 
         current_active = channel_models.get(interaction.channel_id or 0, default_model)
         is_overridden = interaction.channel_id in channel_models
         status_text = "(current channel)" if is_overridden else "(current default)"
 
         choices = [Choice(name=f"◉ {current_active} {status_text}", value=current_active)] if curr_str.lower() in current_active.lower() else []
-        choices += [Choice(name=f"○ {model}", value=model) for model in config_manager.config.llm.models if model != current_active and curr_str.lower() in model.lower()]
+        choices += [Choice(name=f"○ {model}", value=model) for model in self.config.llm.models if model != current_active and curr_str.lower() in model.lower()]
         return choices[:25]
 
     @config_group.command(name="set", description="Edit a specific configuration setting")

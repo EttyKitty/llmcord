@@ -1,7 +1,7 @@
 import discord
 from loguru import logger
 
-from .config_manager import RootConfig
+from .config_manager import RootConfig, config_manager
 from .custom_types import MessageNodeCache
 
 DISCORD_CHAR_LIMIT: int = 2000
@@ -10,14 +10,21 @@ DISCORD_CHAR_LIMIT: int = 2000
 class DiscordService:
     """Service for processing Discord messages and managing responses."""
 
-    def __init__(self, config: RootConfig, message_nodes: MessageNodeCache) -> None:
+    @property
+    def config(self) -> RootConfig:
+        """Get the current configuration.
+
+        :return: The root configuration object.
+        """
+        return config_manager.config
+
+    def __init__(self, message_nodes: MessageNodeCache) -> None:
         """Initialize the message processor.
 
         :param config: The application configuration.
         :param message_nodes: The shared message nodes mapping.
         """
         self.message_nodes = message_nodes
-        self.config = config
 
     async def send_response_chunks(self, trigger_msg: discord.Message, content: str) -> list[discord.Message]:
         """Send response content in chunks to Discord.

@@ -16,7 +16,7 @@ from discord import Message
 from litellm import utils as litellm_utils
 from loguru import logger
 
-from .config_manager import RootConfig
+from .config_manager import RootConfig, config_manager
 from .custom_types import MessageNode, MessagePayloadParams
 from .discord_utils import fetch_history
 from .llm_tools import tool_manager
@@ -78,14 +78,21 @@ class MessageService:
     manages message nodes for conversation history, and processes attachments.
     """
 
-    def __init__(self, config: RootConfig, user: discord.ClientUser, httpx_client: httpx.AsyncClient) -> None:
+    @property
+    def config(self) -> RootConfig:
+        """Get the current configuration.
+
+        :return: The root configuration object.
+        """
+        return config_manager.config
+
+    def __init__(self, user: discord.ClientUser, httpx_client: httpx.AsyncClient) -> None:
         """Initialize the MessageService with configuration and dependencies.
 
         :param config: Root configuration object.
         :param user: The bot's Discord user object.
         :param httpx_client: HTTP client for downloading attachments.
         """
-        self.config = config
         self.user = user
         self.httpx_client = httpx_client
         self.message_nodes: dict[int, MessageNode] = {}

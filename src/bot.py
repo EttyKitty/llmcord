@@ -102,8 +102,8 @@ class LLMCordBot(commands.Bot):
         # Initialize services now that bot user is available
         logger.debug("Initializing services...")
         self.llm_service = LLMService(self.httpx_client)
-        self.message_service = MessageService(config=self.config, user=self.safe_user, httpx_client=self.httpx_client)
-        self.discord_service = DiscordService(config=self.config, message_nodes=self.message_service.message_nodes)
+        self.message_service = MessageService(user=self.safe_user, httpx_client=self.httpx_client)
+        self.discord_service = DiscordService(message_nodes=self.message_service.message_nodes)
         tool_manager.bind_client(self)
         logger.debug("Services initialized!")
 
