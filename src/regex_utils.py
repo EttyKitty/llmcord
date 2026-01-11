@@ -98,17 +98,14 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
         "{user_id}": str(msg.author.id),
         "{user_roles}": user_roles_str,
         "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-        "{guild_description}": (msg.guild.description or "") if msg.guild else "",
+        "{guild_description}": msg.guild.description or "" if msg.guild else "",
         "{guild_emojis}": guild_emojis_str,
         "{channel_name}": getattr(msg.channel, "name", ""),
         "{channel_topic}": getattr(msg.channel, "topic", ""),
         "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
     }
 
-    for key, value in placeholders.items():
-        text = text.replace(key, str(value))
-
-    return text.strip()
+    return text.format_map(placeholders).strip()
 
 
 def sanitize_symbols(username: str) -> str:
