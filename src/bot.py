@@ -309,7 +309,7 @@ async def main() -> int:
             logger.exception("Invalid Discord token.")
             bot.exit_code = 1
             break
-        except (discord.GatewayNotFound, aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (discord.GatewayNotFound, aiohttp.ClientResponseError, aiohttp.WSServerHandshakeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.warning("Network error: {}. Retrying in {} seconds...", e, retry_delay)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)

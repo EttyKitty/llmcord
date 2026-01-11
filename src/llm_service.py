@@ -1,3 +1,9 @@
+"""LLM Service Module.
+
+This module provides the LLMService class for performing LLM completions
+with tool-calling support.
+"""
+
 import asyncio
 import json
 import os
