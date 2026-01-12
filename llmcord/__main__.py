@@ -8,7 +8,7 @@ import time
 
 from loguru import logger
 
-from src.bot import main
+from .bot import main
 
 # Configuration
 MAX_RETRIES = 2  # How many automatic restarts allowed

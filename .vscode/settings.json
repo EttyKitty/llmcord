@@ -9,7 +9,6 @@
             "source.organizeImports": "explicit"
         },
     },
-    "ruff.lineLength": 320,
     "files.exclude": {
         "**/venv": true,
         "**/.venv": true,
@@ -19,6 +18,5 @@
         "**/venv": true,
         "**/.venv": true,
         "**/__pycache__": true
-    },
-    "python.analysis.typeCheckingMode": "strict"
+    }
 }

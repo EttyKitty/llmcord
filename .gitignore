@@ -7,13 +7,13 @@
 !Dockerfile
 !config.default.yaml
 !docker-compose.yaml
-!requirements.txt
 !starter.bat
+!pyproject.toml
 
 !*.md
 !*.py
 !*.json
 
-!src
+!llmcord
 !docs
 !config

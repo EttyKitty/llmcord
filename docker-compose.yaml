@@ -1,7 +1,9 @@
 services:
-  container:
+  llmcord:
     build: .
     network_mode: host
     restart: unless-stopped
     volumes:
-      - ./:/app:ro
+      - ./llmcord:/app/llmcord:ro
+      - ./config:/app/config:rw
+      - ./logs:/app/logs:rw
