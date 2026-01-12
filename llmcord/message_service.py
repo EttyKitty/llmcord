@@ -59,7 +59,7 @@ class MessageNode:
     user_id: int | None = None
     user_display_name: str | None = None
     has_bad_attachments: bool = False
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, compare=False)
 
 
 MessageNodeCache = dict[int, MessageNode]
@@ -83,7 +83,6 @@ class MessageService:
     def __init__(self, user: discord.ClientUser, httpx_client: httpx.AsyncClient) -> None:
         """Initialize the MessageService with configuration and dependencies.
 
-        :param config: Root configuration object.
         :param user: The bot's Discord user object.
         :param httpx_client: HTTP client for downloading attachments.
         """
@@ -285,10 +284,10 @@ class MessageService:
             resp = await client.get(attachment.url, timeout=10.0)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            logger.warning(f"Failed to download {attachment.filename}: HTTP {e.response.status_code}")
+            logger.warning("Failed to download {}: HTTP {}", attachment.filename, e.response.status_code)
             return None
         except httpx.RequestError as e:
-            logger.warning(f"Failed to download {attachment.filename}: {e}")
+            logger.warning("Failed to download {}: {}", attachment.filename, e)
             return None
         else:
             return resp.content

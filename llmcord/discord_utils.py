@@ -246,8 +246,10 @@ async def _fetch_referenced_message(current_msg: discord.Message, force_id: int 
         return None
 
     # Check discord.py's internal cache first
-    if not force_id and current_msg.reference and (cached := (current_msg.reference.cached_message or current_msg.reference.resolved)) and isinstance(cached, discord.Message):
-        return cached
+    if not force_id and current_msg.reference:
+        cached = current_msg.reference.cached_message or current_msg.reference.resolved
+        if isinstance(cached, discord.Message):
+            return cached
 
     try:
         # Use the parent channel if it's a thread starter we're looking for
