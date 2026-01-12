@@ -3,7 +3,7 @@
 import sys
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, TypeVar, cast, get_type_hints
+from typing import Any, TypeVar, cast, get_type_hints
 
 import yaml
 import yaml.representer
@@ -24,10 +24,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 CONFIG_FILE = CONFIG_DIR / "config.default.yaml"
 USER_CONFIG_FILE = CONFIG_DIR / "config.yaml"
-
-
-ConfigValue: TypeAlias = str | int | bool | float | list[Any] | dict[str, Any] | None
 T = TypeVar("T")
+
+type ConfigValue = str | int | bool | float | list[Any] | dict[str, Any] | None
 
 
 def _str_presenter(dumper: yaml.representer.SafeRepresenter, data: str) -> yaml.ScalarNode:

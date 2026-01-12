@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import Callable, Coroutine, Generator, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar, cast
 
@@ -70,7 +70,7 @@ class Trace:
 
 
 @contextmanager
-def timer(label: str, level: int = logging.DEBUG) -> Generator[None, None, None]:
+def timer(label: str, level: int = logging.DEBUG) -> Generator[None]:
     """Log the duration of a block of code."""
     start = time.perf_counter()
     try:
@@ -144,7 +144,7 @@ class RequestLogger:
             log_entry: dict[str, object] = dict(payload)
 
             # Inject timestamp for context
-            log_entry["_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+            log_entry["_timestamp"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             # Redact sensitive headers
             extra_headers = log_entry.get("extra_headers")
