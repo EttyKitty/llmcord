@@ -10,7 +10,7 @@
 ###############################
 
 # Set default behaviour to automatically normalize line endings.
-* text=auto
+* text=auto eol=lf
 
 # Force batch scripts to always use CRLF line endings so that if a repo is accessed
 # in Windows via a file share from Linux, the scripts will work.
@@ -18,17 +18,6 @@
 *.CMD text eol=crlf
 *.bat text eol=crlf
 *.BAT text eol=crlf
-
-# Force bash scripts to always use LF line endings so that if a repo is accessed
-# in Unix via a file share from Windows, the scripts will work.
-*.sh text eol=lf
-
-# Avoid accidental CRLF pollution from Windows editors.
-*.md text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-*.toml text eol=lf
-*.json text eol=lf
 
 ###############################
 # Git Large File System (LFS) #
