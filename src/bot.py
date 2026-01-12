@@ -202,61 +202,42 @@ class LLMCordBot(commands.Bot):
             logger.debug("Periodic verification task cancelled")
 
     def _is_message_allowed(self, message: discord.Message) -> bool:
-        """Check if the message author and channel are allowed based on configuration.
-
-        :param message: The Discord message to check.
-        :return: True if allowed, False otherwise.
-        """
-        is_dm = message.channel.type == discord.ChannelType.private
-
         config = self.config.discord
 
-        # 1. Admin Bypass
+        # Admins always allowed
         if message.author.id in config.permissions.users.admin_ids:
             return True
 
-        # 2. User/Role Validation
-        role_ids = {role.id for role in getattr(message.author, "roles", ())}
-        allowed_users = config.permissions.users.allowed_ids
-        blocked_users = config.permissions.users.blocked_ids
-        allowed_roles = config.permissions.roles.allowed_ids
-        blocked_roles = config.permissions.roles.blocked_ids
+        role_ids = {r.id for r in getattr(message.author, "roles", [])}
+        is_dm = message.channel.type == discord.ChannelType.private
 
-        # Determine if the user is "good" (allowed by default or explicitly)
-        allow_all_users = not allowed_users if is_dm else (not allowed_users and not allowed_roles)
-        is_good_user = allow_all_users or message.author.id in allowed_users or not role_ids.isdisjoint(allowed_roles)
-
-        # Determine if the user is "bad" (not good or explicitly blocked)
-        is_bad_user = not is_good_user or message.author.id in blocked_users or not role_ids.isdisjoint(blocked_roles)
-
-        if is_bad_user:
+        # Check if user or their roles are blocked
+        user_blocked = message.author.id in config.permissions.users.blocked_ids
+        role_blocked = not role_ids.isdisjoint(config.permissions.roles.blocked_ids)
+        if user_blocked or role_blocked:
             return False
 
-        # 3. Channel Validation
-        # Collect current channel ID, parent ID (for threads), and category ID
-        channel_ids: set[int] = set()
-        channel_ids_list: list[int | None] = [message.channel.id, getattr(message.channel, "parent_id", None), getattr(message.channel, "category_id", None)]
-        for cid in channel_ids_list:
-            if cid is not None:
-                channel_ids.add(cid)
+        # Check if user or their roles are allowed
+        has_user_allowed = bool(config.permissions.users.allowed_ids)
+        has_role_allowed = bool(config.permissions.roles.allowed_ids)
+        user_allowed = message.author.id in config.permissions.users.allowed_ids
+        role_allowed = not role_ids.isdisjoint(config.permissions.roles.allowed_ids)
 
-        allowed_channels = config.permissions.channels.allowed_ids
-        blocked_channels = config.permissions.channels.blocked_ids
+        # If allowed lists exist, user must be in them; otherwise, allow by default
+        if (has_user_allowed or has_role_allowed) and not (user_allowed or role_allowed):
+            return False
 
-        # Determine if the channel is "good"
-        is_good_channel = config.allow_dms if is_dm else (not allowed_channels or not channel_ids.isdisjoint(allowed_channels))
+        if is_dm:
+            return config.allow_dms
 
-        # Determine if the channel is "bad"
-        is_bad_channel = not is_good_channel or not channel_ids.isdisjoint(blocked_channels)
+        # Channel permission checks for non-DM messages
+        channel_ids: set[int] = {message.channel.id, getattr(message.channel, "parent_id", 0), getattr(message.channel, "category_id", 0)}
+        channel_allowed = not config.permissions.channels.allowed_ids or not channel_ids.isdisjoint(config.permissions.channels.allowed_ids)
+        channel_blocked = not channel_ids.isdisjoint(config.permissions.channels.blocked_ids)
 
-        return not is_bad_channel
+        return channel_allowed and not channel_blocked
 
     def _valid_trigger_message(self, message: discord.Message) -> bool:
-        """Determine if a message should be processed.
-
-        :param message: The Discord message to check.
-        :return: True if the message should be processed.
-        """
         if message.author.bot:
             return False
 

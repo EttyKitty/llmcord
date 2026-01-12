@@ -101,10 +101,6 @@ class MessageService:
             self.message_nodes.pop(next(iter(self.message_nodes)))
 
     async def _ensure_node(self, msg: discord.Message) -> None:
-        """Ensure a message node exists and is fully initialized.
-
-        :param msg: The Discord message to process and store.
-        """
         node = self.message_nodes.setdefault(msg.id, MessageNode())
         if node.text is not None:
             return
@@ -143,11 +139,6 @@ class MessageService:
                     node.images.append({"type": "image_url", "image_url": {"url": f"data:{ctype};base64,{b64}"}})
 
     def _is_supported(self, a: discord.Attachment) -> bool:
-        """Check if an attachment type is supported for processing.
-
-        :param a: Discord attachment to check.
-        :return: True if the attachment is text or image type, False otherwise.
-        """
         return any(a.content_type.startswith(t) for t in ("text", "image")) if a.content_type else False
 
     async def construct_llm_payload(self, message: discord.Message) -> dict[str, Any]:
@@ -170,12 +161,6 @@ class MessageService:
         return self._finalize_payload(messages, provider, model)
 
     def _assemble_chat_history(self, history: list[Message], params: MessagePayloadParams) -> list[dict[str, Any]]:
-        """Assemble chat history into structured message format for LLM payload.
-
-        :param history: List of Discord messages in conversation history.
-        :param params: Parameters controlling message assembly behavior.
-        :return: List of message dictionaries in chronological order.
-        """
         payload: list[dict[str, Any]] = []
         for msg in history:
             node = self.message_nodes.get(msg.id)
@@ -200,13 +185,6 @@ class MessageService:
         return payload[::-1]  # Chronological
 
     def _finalize_payload(self, messages: list[dict[str, Any]], provider: str, model: str) -> dict[str, Any]:
-        """Finalize the LLM payload with model-specific configuration.
-
-        :param messages: List of message dictionaries for the conversation.
-        :param provider: The LLM provider name.
-        :param model: The specific model name.
-        :return: Complete payload dictionary ready for LLM API call.
-        """
         provider_config = self.config.llm.providers.get(provider, {})
         full_model = f"{provider}/{model}"
         model_config = self.config.llm.models.get(full_model, {})
@@ -240,9 +218,7 @@ class MessageService:
 
         return payload
 
-    # --- Small Helpers ---
     def _parse_model_str(self, msg: Message) -> tuple[str, str, bool]:
-        """Parse the model string into provider, model, and vision override flag."""
         raw = self.config.chat.channel_models.get(msg.channel.id, self.config.chat.default_model)
 
         has_vision_override = raw.endswith(":vision")
@@ -281,32 +257,30 @@ class MessageService:
 
     @staticmethod
     def _get_text_content(msg: discord.Message) -> str:
-        """Extract text content from a Discord message including embeds and components.
-
-        :param msg: The Discord message to extract text from.
-        :return: Combined text content from message content, embeds, and components.
-        """
         parts: list[str] = []
-        if msg.content.strip():
-            parts.append(msg.content.lstrip())
 
-        for e in msg.embeds:
-            parts.extend(filter(None, [e.title, e.description, getattr(e.footer, "text", None)]))
+        content = msg.content.lstrip()
+        if content:
+            parts.append(content)
 
-        for c in msg.components:
-            if c.type == discord.ComponentType.text_display:
-                parts.extend(getattr(c, "content", ""))
+        for embed in msg.embeds:
+            if embed.title:
+                parts.append(embed.title)
+            if embed.description:
+                parts.append(embed.description)
+            if embed.footer and embed.footer.text:
+                parts.append(embed.footer.text)
 
-        return "\n".join(filter(None, parts))
+        for component in msg.components:
+            if component.type == discord.ComponentType.text_display:
+                content = getattr(component, "content", "")
+                if content:
+                    parts.append(content)
+
+        return "\n".join(parts)
 
     @staticmethod
     async def _download_attachment(client: httpx.AsyncClient, attachment: discord.Attachment) -> bytes | None:
-        """Download the content of a Discord attachment.
-
-        :param client: HTTP client for making the download request.
-        :param attachment: The Discord attachment to download.
-        :return: Bytes content of the attachment or None if download fails.
-        """
         try:
             resp = await client.get(attachment.url, timeout=10.0)
             resp.raise_for_status()

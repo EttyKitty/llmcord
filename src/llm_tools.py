@@ -68,7 +68,6 @@ async def run_tool_call(tool_call: dict[str, Any], client: discord.Client) -> di
 
 
 async def _web_search(query: str) -> str:
-    """Perform a web search using DuckDuckGo."""
     if not query:
         return "Error: No query provided."
 
@@ -89,124 +88,50 @@ async def _web_search(query: str) -> str:
 
 
 def _is_safe_host(netloc: str) -> bool:
-    """Check if the host is safe to access (not localhost or private IP)."""
-    # Remove port if present
     host = netloc.split(":")[0].lower()
-
-    # Block localhost variations
     if host in ("localhost", "127.0.0.1", "::1"):
         return False
-
     try:
-        # Collect all resolved addresses first
-        all_addrs: list[Any] = []
-
-        # Try IPv4
-        try:
-            addr_info = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-            all_addrs.extend(info[4][0] for info in addr_info)
-        except socket.gaierror:
-            pass
-
-        # Try IPv6
-        try:
-            addr_info = socket.getaddrinfo(host, None, socket.AF_INET6, socket.SOCK_STREAM)
-            all_addrs.extend(info[4][0] for info in addr_info)
-        except socket.gaierror:
-            pass
-
-        for resolved_ip in all_addrs:
-            ip = ipaddress.ip_address(resolved_ip)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
+        for family in (socket.AF_INET, socket.AF_INET6):
+            res = socket.getaddrinfo(host, None, family, socket.SOCK_STREAM)
+            if any(ipaddress.ip_address(i[4][0]).is_private for i in res):
                 return False
-    except ValueError:
+    except (socket.gaierror, ValueError):
         pass
-
     return True
 
 
 async def _open_link(url: str) -> str:
-    """Fetch and extract the main content of a web page with security measures."""
-    if not url:
-        logger.debug("open_link: No URL provided")
-        return "Error: No URL provided."
-
-    logger.debug("open_link: Validating URL: {}", url)
-
-    # Validate URL
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        logger.debug("open_link: Invalid scheme '{}' for URL: {}", parsed.scheme, url)
-        return "Error: Invalid URL scheme. Only HTTP and HTTPS are allowed."
-    if not parsed.netloc:
-        logger.debug("open_link: Missing netloc for URL: {}", url)
-        return "Error: Invalid URL format."
-
-    logger.debug("open_link: Checking host safety for: {}", parsed.netloc)
-    if not _is_safe_host(parsed.netloc):
-        logger.debug("open_link: Host rejected (localhost or private network): {}", parsed.netloc)
-        return "Error: Access to localhost or private networks is not allowed for security reasons."
-
-    logger.info("open_link: URL validation passed, fetching content from: {}", url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not _is_safe_host(parsed.netloc):
+        return "Error: Invalid or unsafe URL."
 
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.google.com/",
-            "Connection": "keep-alive",
-        }
-        async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=False, http2=True) as client:
-            logger.debug("open_link: Sending HTTP request to: {}", url)
-            response = await client.get(url)
-            response.raise_for_status()
-            logger.debug("open_link: HTTP {} response received", response.status_code)
-
-            raw_html = response.text
-
-            logger.debug("open_link: Extracting main content from HTML")
-            extracted_content = trafilatura.extract(raw_html, include_comments=False)
-
-            if not extracted_content:
-                logger.debug("open_link: No extractable content found, returning plain text")
-                extracted_content = raw_html[:3000]
-
-            content_length = len(extracted_content)
-            logger.debug("open_link: Response content length: {} bytes", content_length)
-
-            if content_length > MAX_CONTENT_SIZE:
-                logger.debug("open_link: Content exceeds max size limit ({} > {})", content_length, MAX_CONTENT_SIZE)
-                return f"Error: Page content exceeds maximum size limit ({MAX_CONTENT_SIZE} bytes)!"
-
-            logger.info("open_link: Successfully extracted content from: {}", url)
-            return extracted_content
-    except httpx.TimeoutException:
-        logger.debug("open_link: Request timed out for: {}", url)
-        return "Error: Request timed out."
-    except httpx.HTTPStatusError as e:
-        logger.debug("open_link: HTTP error {} for URL: {}", e.response.status_code, url)
-        return f"Error: HTTP {e.response.status_code} - {e.response.reason_phrase}"
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            r = await client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Referer": "https://www.google.com/",
+                    "Connection": "keep-alive",
+                },
+            )
+            r.raise_for_status()
+            content = trafilatura.extract(r.text) or r.text[:3000]
+            return content[:MAX_CONTENT_SIZE] if len(content) <= MAX_CONTENT_SIZE else "Error: Too large."
     except Exception as e:
-        logger.exception("open_link: Unexpected error fetching URL: {}", url)
-        return f"Error: Failed to fetch content - {e}"
+        return f"Error: {e}"
 
 
 async def _ignore_message(reason: str) -> str:
-    """Logic for ignoring a message.
-
-    Returns a sentinel string that the bot logic can intercept to
-    cancel the response.
-    """
     logger.info("LLM decided to ignore message. Reason: {}", reason)
     return f"__STOP_RESPONSE__|{reason}"
 
 
 async def _read_message_link(link: str, context_padding: int, client: discord.Client) -> str:
-    """Fetch a message and its context from a Discord link."""
-    # A single, generic error for the LLM so it doesn't hallucinate fixes for permissions it doesn't have.
-
     if not client:
         logger.error("ToolManager: Discord client is not bound.")
         return GENERIC_ERROR
@@ -221,25 +146,19 @@ async def _read_message_link(link: str, context_padding: int, client: discord.Cl
     msg_id = int(data["message_id"])
 
     try:
-        # 1. Resolve Channel
         channel = client.get_channel(channel_id)
         if not channel:
             channel = await client.fetch_channel(channel_id)
 
-        # 2. Validate Channel Type
         if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
             logger.debug("ToolManager: Unsupported channel type: {}", type(channel))
             return GENERIC_ERROR
 
-        # 3. Fetch Target & Context
-        # We fetch the target first to ensure it exists
         target_msg = await channel.fetch_message(msg_id)
 
-        # Fetch surrounding history (async generator -> list)
         context_msgs = [msg async for msg in channel.history(around=target_msg, limit=context_padding)]
         context_msgs.sort(key=lambda m: m.created_at)
 
-        # 4. Format Output
         output = [f"**Context for linked message in #{channel.name}:**\n"]
         for msg in context_msgs:
             marker = " (TARGET)" if msg.id == msg_id else ""
@@ -249,10 +168,8 @@ async def _read_message_link(link: str, context_padding: int, client: discord.Cl
         return "\n".join(output)
 
     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-        # Catch-all for Discord API errors (Permissions, Deleted messages, Unknown channels)
         logger.warning("ToolManager: Failed to fetch message link '{}'. Reason: {}", link, e)
         return GENERIC_ERROR
     except Exception:
-        # Catch-all for unexpected logic errors
         logger.exception("ToolManager: Unexpected error parsing message link '{}'", link)
         return GENERIC_ERROR
