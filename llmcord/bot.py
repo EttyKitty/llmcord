@@ -35,7 +35,6 @@ class LLMCordBot(commands.Bot):
     This class manages the bot's lifecycle, message processing, conversation
     context building, and interaction with LLM providers via OpenAI-compatible APIs.
 
-    :ivar llm_service: Service for LLM operations.
     :ivar message_service: Service for message processing.
     :ivar httpx_client: Shared HTTP client for external requests.
     :ivar exit_code: Exit code.
@@ -138,7 +137,8 @@ class LLMCordBot(commands.Bot):
                     response_text = await perform_completion(llm_payload, self)
 
             if response_text.startswith("__STOP_RESPONSE__"):
-                _, reason = response_text.split("|")
+                parts = response_text.split("|", 1)
+                reason = parts[1] if len(parts) > 1 else "Unknown"
 
                 logger.info("Response aborted by LLM. Reason: {}", reason)
                 return

@@ -3,6 +3,7 @@
 This module defines the tools available to the LLM and the logic to execute them.
 """
 
+import asyncio
 import ipaddress
 import json
 import re
@@ -26,12 +27,16 @@ DEFAULT_CONTEXT_PADDING = 10
 
 def get_tool_definitions() -> list[dict[str, Any]]:
     """Return the JSON schemas for available tools."""
-    with (TOOLS_PATH).open() as f:
-        return json.load(f)
+    try:
+        with TOOLS_PATH.open() as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.error("Failed to load tool definitions from {}: {}", TOOLS_PATH, e)
+        return []
 
 
 async def run_tool_call(tool_call: dict[str, Any], client: discord.Client) -> dict[str, Any]:
-    """Parse, dispatche, and execute an LLM tool call, returning the formatted result."""
+    """Parse, dispatch, and execute an LLM tool call, returning the formatted result."""
     func_info = tool_call.get("function", {})
     name = func_info.get("name", "")
     tc_id = tool_call.get("id", "")
@@ -87,13 +92,16 @@ async def _web_search(query: str) -> str:
     return "\n---\n".join(results) if results else "No results found."
 
 
-def _is_safe_host(netloc: str) -> bool:
+async def _is_safe_host(netloc: str) -> bool:
+    """Check if a host is safe (not localhost or private IP) using async-compatible DNS resolution."""
     host = netloc.split(":")[0].lower()
     if host in ("localhost", "127.0.0.1", "::1"):
         return False
+
     try:
+        # Run the blocking DNS resolution in a thread pool
         for family in (socket.AF_INET, socket.AF_INET6):
-            res = socket.getaddrinfo(host, None, family, socket.SOCK_STREAM)
+            res = await asyncio.to_thread(socket.getaddrinfo, host, None, family, socket.SOCK_STREAM)
             if any(ipaddress.ip_address(i[4][0]).is_private for i in res):
                 return False
     except (socket.gaierror, ValueError):
@@ -103,7 +111,7 @@ def _is_safe_host(netloc: str) -> bool:
 
 async def _open_link(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc or not _is_safe_host(parsed.netloc):
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not await _is_safe_host(parsed.netloc):
         return "Error: Invalid or unsafe URL."
 
     try:
@@ -121,7 +129,9 @@ async def _open_link(url: str) -> str:
             )
             r.raise_for_status()
             content = trafilatura.extract(r.text) or r.text[:3000]
-            return content[:MAX_CONTENT_SIZE] if len(content) <= MAX_CONTENT_SIZE else "Error: Too large."
+            if len(content) > MAX_CONTENT_SIZE:
+                return content[:MAX_CONTENT_SIZE]
+            return content
     except Exception as e:
         return f"Error: {e}"
 

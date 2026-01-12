@@ -88,21 +88,21 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     guild_emojis_str = ", ".join([str(emoji) for emoji in guild_emojis]) or ""
 
     placeholders: dict[str, str] = {
-        "{date}": now.strftime("%B %d %Y"),
-        "{time}": now.strftime("%H:%M:%S %Z%z"),
-        "{bot_name}": bot_user.display_name,
-        "{bot_id}": str(bot_user.id),
-        "{model}": model,
-        "{provider}": provider,
-        "{user_display_name}": msg.author.display_name,
-        "{user_id}": str(msg.author.id),
-        "{user_roles}": user_roles_str,
-        "{guild_name}": msg.guild.name if msg.guild else "Direct Messages",
-        "{guild_description}": msg.guild.description or "" if msg.guild else "",
-        "{guild_emojis}": guild_emojis_str,
-        "{channel_name}": getattr(msg.channel, "name", ""),
-        "{channel_topic}": getattr(msg.channel, "topic", ""),
-        "{channel_nsfw}": str(getattr(msg.channel, "nsfw", False)),
+        "date": now.strftime("%B %d %Y"),
+        "time": now.strftime("%H:%M:%S %Z%z"),
+        "bot_name": bot_user.display_name,
+        "bot_id": str(bot_user.id),
+        "model": model,
+        "provider": provider,
+        "user_display_name": msg.author.display_name,
+        "user_id": str(msg.author.id),
+        "user_roles": user_roles_str,
+        "guild_name": msg.guild.name if msg.guild else "Direct Messages",
+        "guild_description": msg.guild.description or "" if msg.guild else "",
+        "guild_emojis": guild_emojis_str,
+        "channel_name": getattr(msg.channel, "name", ""),
+        "channel_topic": getattr(msg.channel, "topic", ""),
+        "channel_nsfw": str(getattr(msg.channel, "nsfw", False)),
     }
 
     return text.format_map(placeholders).strip()

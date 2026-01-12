@@ -106,8 +106,8 @@ docker compose up
 
 **Using Python manually:**
 ```bash
-python -m pip install -U -r requirements.txt
-python main.py
+python -m pip install -e .
+python -m llmcord
 ```
 
 ## Notes

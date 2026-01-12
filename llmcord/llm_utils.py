@@ -19,14 +19,21 @@ os.environ["LITELLM_LOG"] = "ERROR"
 litellm.telemetry = False
 litellm.modify_params = True
 
+MAX_TOOL_ITERATIONS = 5
+
 
 async def perform_completion(chat_params: dict[str, Any], client: discord.Client) -> str:
-    """Perform LLM completion with tool calling."""
+    """Perform LLM completion with iterative tool calling support.
+
+    :param chat_params: The LLM completion parameters including messages and model.
+    :param client: Discord client for tool calls that require Discord API access.
+    :return: The final response content, or empty string on failure/exhaustion.
+    """
     try:
         params = chat_params.copy()
         params["messages"] = list(params["messages"])
 
-        for i in range(5):
+        for i in range(MAX_TOOL_ITERATIONS):
             request_logger.log(params)
             response = await litellm.acompletion(**params, timeout=180)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
 

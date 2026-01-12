@@ -26,9 +26,7 @@ NOISY_LOGGERS = [
     "httpcore",
     "openai",
     "asyncio",
-    "LiteLLM Router",
-    "LiteLLM",
-    "LiteLLM Proxy",
+    "litellm",
 ]
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
