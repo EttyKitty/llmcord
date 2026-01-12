@@ -1,6 +1,7 @@
 """Module for handling application logging configuration and utilities."""
 
 import asyncio
+import copy
 import ctypes
 import functools
 import json
@@ -111,7 +112,7 @@ def time_performance(label: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
 class RequestLogger:
     """Handles logging of LLM request payloads to a file. Outputs pretty-printed JSON for readability."""
 
-    def __init__(self, filename: str = "logs/llm_requests.json") -> None:
+    def __init__(self, filename: str = "llm_requests.json") -> None:
         """Initialize the RequestLogger with a file handler.
 
         :param filename: Path to the log file.
@@ -139,7 +140,7 @@ class RequestLogger:
         """
         try:
             # Create a shallow copy
-            log_entry: dict[str, object] = dict(payload)
+            log_entry: dict[str, object] = copy.deepcopy(dict(payload))
 
             # Inject timestamp for context
             log_entry["_timestamp"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S %Z")

@@ -4,11 +4,11 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
-
 COPY llmcord/ ./llmcord/
 COPY config/ ./config/
+COPY pyproject.toml .
+
+RUN pip install --no-cache-dir .
 
 # Execute as a module
 CMD ["python", "-m", "llmcord"]

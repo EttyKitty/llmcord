@@ -77,14 +77,16 @@ async def _web_search(query: str) -> str:
         return "Error: No query provided."
 
     logger.info("Performing web search for: {}", query)
-    results: list[str] = []
     try:
-        # The latest DDGS version works best as a context manager
-        with DDGS() as ddgs:
-            ddgs_gen = ddgs.text(query, max_results=5)
-            for r in ddgs_gen:
-                r_dict = cast("dict[str, str]", r)
-                results.append(f"Title: {r_dict['title']}\nSnippet: {r_dict['body']}\nURL: {r_dict['href']}\n")
+        def _search() -> list[str]:
+            results: list[str] = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=5):
+                    r_dict = cast("dict[str, str]", r)
+                    results.append(f"Title: {r_dict['title']}\nSnippet: {r_dict['body']}\nURL: {r_dict['href']}\n")
+            return results
+
+        results = await asyncio.to_thread(_search)
     except Exception as e:
         logger.exception("DuckDuckGo search failed!")
         return f"Search failed: {e}"
@@ -104,8 +106,11 @@ async def _is_safe_host(netloc: str) -> bool:
             res = await asyncio.to_thread(socket.getaddrinfo, host, None, family, socket.SOCK_STREAM)
             if any(ipaddress.ip_address(i[4][0]).is_private for i in res):
                 return False
-    except (socket.gaierror, ValueError):
-        pass
+    except socket.gaierror:
+        logger.debug("DNS resolution failed for host '{}', allowing", host)
+    except ValueError as e:
+        logger.warning("Failed to parse IP for host '{}': {}", host, e)
+        return False
     return True
 
 
