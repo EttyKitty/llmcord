@@ -5,7 +5,7 @@ chains and provides utility functions for sanitizing text input/output.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 
 import discord
@@ -81,7 +81,7 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
     :param provider: The LLM provider identifier.
     :return: The text with all placeholders replaced.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     user_roles = getattr(msg.author, "roles", [])
     user_roles_str = ", ".join([role.name for role in user_roles if role.name != "@everyone"]) or ""
     guild_emojis = getattr(msg.guild, "emojis", [])

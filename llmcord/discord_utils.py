@@ -113,7 +113,7 @@ async def _fetch_channel_history(
 
     try:
         history = await asyncio.wait_for(collect_history(), timeout=DISCORD_API_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Timeout fetching channel history for message {}", message.id)
         history = []
 
@@ -136,7 +136,7 @@ async def _fetch_reply_chain_history(
     """
     try:
         local_cache: dict[int, discord.Message] = await asyncio.wait_for(_collect_cache(message), timeout=DISCORD_API_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Timeout fetching reply chain history for message {}", message.id)
         local_cache = {}
 
@@ -255,13 +255,13 @@ async def _fetch_referenced_message(current_msg: discord.Message, force_id: int 
         if force_id and isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
             try:
                 return await asyncio.wait_for(channel.parent.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Timeout fetching referenced message {} from parent channel", target_id)
                 return None
 
         try:
             return await asyncio.wait_for(channel.fetch_message(target_id), timeout=DISCORD_API_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Timeout fetching referenced message {}", target_id)
             return None
     except (discord.NotFound, discord.HTTPException):

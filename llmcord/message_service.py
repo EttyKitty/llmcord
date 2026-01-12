@@ -287,7 +287,7 @@ class MessageService:
         except httpx.HTTPStatusError as e:
             logger.warning(f"Failed to download {attachment.filename}: HTTP {e.response.status_code}")
             return None
-        except Exception as e:
+        except httpx.RequestError as e:
             logger.warning(f"Failed to download {attachment.filename}: {e}")
             return None
         else:
