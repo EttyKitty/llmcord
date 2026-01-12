@@ -49,14 +49,13 @@ echo.
 REM Install/Update required packages
 echo [INFO] Installing/Updating required packages...
 python -m pip install --upgrade pip
-python -m pip install -U -r requirements.txt
+python -m pip install -e .
 if %errorlevel% neq 0 (
-    echo [ERROR] Failed to install packages.
-    echo [ERROR] Please check requirements.txt file.
+    echo [ERROR] Failed to install packages. Check pyproject.toml.
     pause
     exit /b 1
 )
-echo [SUCCESS] All packages installed successfully.
+echo [SUCCESS] All packages installed successfully. Environment ready.
 echo.
 
 REM Start the bot loop
@@ -66,7 +65,7 @@ echo llmcord is starting...
 echo ================================
 echo.
 
-python main.py
+python -m llmcord
 
 REM Check exit code for reload (2)
 if %errorlevel% equ 2 (

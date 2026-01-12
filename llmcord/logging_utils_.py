@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Coroutine, Generator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, ParamSpec, TypeVar, cast
 
 from loguru import logger
@@ -29,9 +30,11 @@ NOISY_LOGGERS = [
     "LiteLLM",
     "LiteLLM Proxy",
 ]
-
+BASE_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = BASE_DIR / "logs"
 P = ParamSpec("P")
 R = TypeVar("R")
+
 # --- Fix for Windows Colors ---
 if os.name == "nt":
     # Enables ANSI support in Windows CMD via kernel32 calls
@@ -115,6 +118,9 @@ class RequestLogger:
 
         :param filename: Path to the log file.
         """
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+        full_path = LOG_DIR / filename
         self.logger = logging.getLogger("request_logger")
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
@@ -122,7 +128,7 @@ class RequestLogger:
         if self.logger.handlers:
             self.logger.handlers.clear()
 
-        handler = logging.FileHandler(filename, mode="w", encoding="utf-8")
+        handler = logging.FileHandler(full_path, mode="w", encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(handler)
 
