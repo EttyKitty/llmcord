@@ -29,6 +29,11 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["ALL"]
+ignore = [
+    "D107",
+    "D105",
+    "D104",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["llmcord"]

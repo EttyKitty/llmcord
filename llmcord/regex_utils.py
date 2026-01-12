@@ -5,6 +5,7 @@ chains and provides utility functions for sanitizing text input/output.
 """
 
 import re
+from collections import defaultdict
 from datetime import UTC, datetime
 from functools import lru_cache
 
@@ -105,7 +106,8 @@ def replace_placeholders(text: str, msg: discord.Message, bot_user: discord.Clie
         "channel_nsfw": str(getattr(msg.channel, "nsfw", False)),
     }
 
-    return text.format_map(placeholders).strip()
+    safe_placeholders = defaultdict(str, placeholders)
+    return text.format_map(safe_placeholders).strip()
 
 
 def sanitize_symbols(username: str) -> str:

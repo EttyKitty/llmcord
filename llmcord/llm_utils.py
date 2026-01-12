@@ -6,7 +6,7 @@ with tool-calling support.
 
 import asyncio
 import os
-from typing import Any, cast
+from typing import Any
 
 import discord
 import litellm
@@ -37,7 +37,7 @@ async def perform_completion(chat_params: dict[str, Any], client: discord.Client
             request_logger.log(params)
             response = await litellm.acompletion(**params, timeout=180)  # type: ignore[no-untyped-call] # litellm has incomplete type stubs, remove when fixed upstream
 
-            model_response = cast("Any", response)  # litellm types are incomplete
+            model_response: Any = response  # litellm types are incomplete
 
             if not hasattr(model_response, "choices") or not model_response.choices:
                 logger.debug("Iteration {}: No choices in response", i)
@@ -49,12 +49,24 @@ async def perform_completion(chat_params: dict[str, Any], client: discord.Client
                 logger.debug("Iteration {}: LLM requested {} tool calls", i, len(message.tool_calls))
                 params["messages"].append(message.model_dump())
 
-                results = await asyncio.gather(*(run_tool_call(tc, client) for tc in message.tool_calls))
+                results = await asyncio.gather(
+                    *(run_tool_call(tc, client) for tc in message.tool_calls),
+                    return_exceptions=True,
+                )
 
+                # Filter out failed calls and log them
+                valid_results: list[dict[str, Any]] = []
                 for res in results:
-                    if res["content"].startswith("__STOP_RESPONSE__"):
+                    if isinstance(res, Exception):
+                        logger.warning("Tool call failed: {}", res)
+                        continue
+                    valid_results.append(res)  # type: ignore[assignment]
+                results = valid_results
+
+                for tool_result in results:
+                    if tool_result["content"].startswith("__STOP_RESPONSE__"):
                         logger.debug("Iteration {}: Abort sentinel detected in tool results", i)
-                        return res["content"]
+                        return tool_result["content"]
 
                 params["messages"].extend(results)
                 continue
