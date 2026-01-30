@@ -73,7 +73,7 @@ async def run_tool_call(tool_call: dict[str, Any], client: discord.Client) -> di
         "content": str(content),
     }
 
-
+@time_performance("Web Search")
 async def _web_search(query: str) -> str:
     """Perform a DuckDuckGo web search and return formatted results."""
     if not query:
@@ -107,8 +107,17 @@ async def _is_safe_host(netloc: str) -> bool:
         # Run the blocking DNS resolution in a thread pool
         for family in (socket.AF_INET, socket.AF_INET6):
             res = await asyncio.to_thread(socket.getaddrinfo, host, None, family, socket.SOCK_STREAM)
-            if any(ipaddress.ip_address(i[4][0]).is_private for i in res):
-                return False
+            for i in res:
+                ip = ipaddress.ip_address(i[4][0])
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_multicast
+                    or ip.is_unspecified
+                ):
+                    return False
     except socket.gaierror:
         logger.warning("DNS resolution failed for host '{}', blocking", host)
         return False
@@ -150,7 +159,7 @@ async def _ignore_message(reason: str) -> str:
     logger.info("LLM decided to ignore message. Reason: {}", reason)
     return f"__STOP_RESPONSE__|{reason}"
 
-
+@time_performance("Read Message Link")
 async def _read_message_link(link: str, context_padding: int, client: discord.Client) -> str:
     if not client:
         logger.error("ToolManager: Discord client is not bound.")
