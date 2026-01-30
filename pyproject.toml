@@ -58,3 +58,6 @@ reportUntypedFunctionDecorator = true
 reportUntypedClassDecorator = true
 reportUntypedBaseClass = true
 reportImplicitStringConcatenation = true
+
+[tool.setuptools.packages.find]
+include = ["llmcord*"]

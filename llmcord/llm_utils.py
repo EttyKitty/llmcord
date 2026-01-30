@@ -19,6 +19,7 @@ os.environ["LITELLM_LOG"] = "ERROR"
 litellm.telemetry = False
 litellm.modify_params = True
 
+# Maximum iterations for tool-calling loop to prevent infinite loops
 MAX_TOOL_ITERATIONS = 5
 
 
