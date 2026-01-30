@@ -9,11 +9,11 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Coroutine, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar, cast
+from typing import ParamSpec, TypeGuard, TypeVar, cast
 
 from loguru import logger
 
@@ -34,6 +34,7 @@ LOG_DIR = BASE_DIR / "logs"
 P = ParamSpec("P")
 R = TypeVar("R")
 
+
 # --- Fix for Windows Colors ---
 if os.name == "nt":
     # Enables ANSI support in Windows CMD via kernel32 calls
@@ -50,6 +51,10 @@ if os.name == "nt":
     except (OSError, AttributeError):
         # Gracefully degrade if ANSI support cannot be enabled
         pass
+
+
+def _is_async_callable[**P, R](func: Callable[P, R]) -> TypeGuard[Callable[P, Awaitable[R]]]:
+    return asyncio.iscoroutinefunction(func)
 
 
 class Trace:
@@ -84,13 +89,13 @@ def time_performance(label: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Log the execution time of synchronous or asynchronous functions."""
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        if asyncio.iscoroutinefunction(func):
+        if _is_async_callable(func):
 
             @functools.wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 start = time.perf_counter()
                 logger.debug("{}...", label)
-                result = await cast("Coroutine[Any, Any, R]", func(*args, **kwargs))
+                result = await func(*args, **kwargs)
                 logger.debug("{} took {:.4f} seconds", label, time.perf_counter() - start)
                 return result
 
