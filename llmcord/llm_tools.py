@@ -18,6 +18,8 @@ import trafilatura
 from ddgs import DDGS  # type: ignore[import-untyped]
 from loguru import logger
 
+from .logging_utils_ import time_performance
+
 MAX_CONTENT_SIZE = 500000
 TOOLS_PATH = Path(__file__).parent / "llm_tools.json"
 MSG_LINK_PATTERN = re.compile(r"channels/(?P<guild_id>\d+)/(?P<channel_id>\d+)/(?P<message_id>\d+)")
@@ -73,6 +75,7 @@ async def run_tool_call(tool_call: dict[str, Any], client: discord.Client) -> di
 
 
 async def _web_search(query: str) -> str:
+    """Perform a DuckDuckGo web search and return formatted results."""
     if not query:
         return "Error: No query provided."
 
@@ -107,13 +110,15 @@ async def _is_safe_host(netloc: str) -> bool:
             if any(ipaddress.ip_address(i[4][0]).is_private for i in res):
                 return False
     except socket.gaierror:
-        logger.debug("DNS resolution failed for host '{}', allowing", host)
+        logger.warning("DNS resolution failed for host '{}', blocking", host)
+        return False
     except ValueError as e:
         logger.warning("Failed to parse IP for host '{}': {}", host, e)
         return False
     return True
 
 
+@time_performance("Open Link")
 async def _open_link(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc or not await _is_safe_host(parsed.netloc):

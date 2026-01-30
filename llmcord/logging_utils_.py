@@ -139,7 +139,7 @@ class RequestLogger:
         :return: None
         """
         try:
-            # Create a shallow copy
+            # Create a deep copy to avoid mutating the original
             log_entry: dict[str, object] = copy.deepcopy(dict(payload))
 
             # Inject timestamp for context
@@ -178,7 +178,7 @@ def setup_logging() -> None:
     logger.add(sys.stderr, format=log_format, level="DEBUG", colorize=True)
 
     for noisy in NOISY_LOGGERS:
-        logger.disable(noisy)
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 # Initialize immediately on import
